@@ -40,21 +40,22 @@ Central hub for job site material orders. Search orders by job, vendor, PO # or 
 | `ADMIN_PASSWORD` | yes | Password for full access (create, edit, receive) |
 | `VIEWER_PASSWORD` | yes | Password for view-only access |
 | `SESSION_SECRET` | yes | Any long random string (40+ characters). Changing it signs everyone out. |
-| `ANTHROPIC_API_KEY` | for slip scanning | Claude API key (see below). Without it, everything works except "Read slip automatically". |
+| `ANTHROPIC_API_KEY` | for AI reading | Claude API key (see below). Without it, everything works except "Read slip automatically" and "Import from PDF". |
 | `PO_PREFIX` | optional | Defaults to `PO-` |
 | `PO_START` | optional | First PO number, defaults to `1001` |
 | `CLAUDE_MODEL` | optional | Defaults to `claude-sonnet-5-5` |
 
 After adding or changing variables: **Deploys → Trigger deploy → Deploy site**.
 
-### 4. Claude API key (packing slip scanning)
+### 4. Claude API key (packing slip scanning & PDF order import)
 1. Go to **console.anthropic.com** and sign in or create an account (separate from a Claude.ai subscription).
-2. **Billing:** add a payment method and buy a small amount of credit (e.g. $10). Each slip costs a few cents.
+2. **Billing:** add a payment method and buy a small amount of credit (e.g. $10). Each slip or order PDF costs a few cents.
 3. **API Keys → Create Key**, name it `Material Purchasing`, copy it (starts with `sk-ant-…`).
 4. Add it in Netlify as `ANTHROPIC_API_KEY`, then redeploy.
 
 ## Using it
 
+- **Import from PDF:** on New Order, tap **Import from PDF** and choose the vendor's order confirmation or quote. The vendor, job, order #, dates, delivery notes and every line item are filled in and highlighted. Uncheck items you don't want, adjust anything, then **Create order** — nothing is saved until you do. The app checks the items against the PDF's subtotal and flags quotes, freight/tax and unknown vendors or jobs. The PDF is attached to the order.
 - **New order:** pick the vendor and job, enter the vendor's order # (and PO # if you have one), add items. For vendors marked *Requires PO*, the next PO # is assigned automatically when you save.
 - **Receive delivery:** from an order, tap **Receive delivery**. Take a photo of the packing slip (or choose a PDF) and tap **Read slip automatically** — quantities, slip # and date are filled in and highlighted for you to check. Or enter quantities by hand / **Fill all remaining**. The slip file is saved with the delivery.
 - **Partial shipments / backorders:** each delivery adds to *Delivered*; *Remaining* shows what's still owed.
@@ -62,6 +63,8 @@ After adding or changing variables: **Deploys → Trigger deploy → Deploy site
 - **View-only users** can search and see everything but can't change anything.
 
 ## Limits worth knowing
-- Slip photos are shrunk in the browser before upload; PDFs must be under ~4.4 MB.
-- Slip reading must finish within Netlify's function time limit (about 30 seconds). Normally takes 10–20 seconds.
+- Photos are shrunk in the browser before upload; PDFs must be under ~4.4 MB.
+- Job matching from a PDF works best when the job's address is filled in on the Job Name List ("Nearest Physical Address").
+- Very long order PDFs (100+ lines) may not finish within the time limit — split them if that happens.
+- Slip and order reading must finish within Netlify's function time limit (about 30 seconds). Normally takes 10–20 seconds.
 - Airtable attachment links expire after a couple of hours, so the app always fetches fresh ones when you open an order.

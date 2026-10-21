@@ -366,6 +366,13 @@ async function renderOrderForm(id) {
     <a class="back" href="${id ? `#/order/${id}` : '#/'}">← ${id ? 'Back to order' : 'All orders'}</a>
     <div class="page-head"><div class="grow"><h1>${id ? `Edit ${esc(o.ref)}` : 'New order'}</h1></div></div>
     <form id="orderForm" autocomplete="off">
+      ${!id ? `<div class="card import-card"><div class="card-body">
+        <div class="import-row">
+          <div class="grow"><b>Have this order as a PDF?</b><div class="small muted">Upload the vendor's order confirmation or quote and the form fills itself in. You review and adjust everything before anything is saved.</div></div>
+          <label class="btn dark" id="importBtn">Import from PDF<input type="file" id="importFile" accept="application/pdf,image/*" hidden></label>
+        </div>
+        <div id="importOut"></div>
+      </div></div>` : ''}
       <div class="card"><div class="card-body grid c4">
         <label class="field span-2"><span>Vendor</span>
           <div style="display:flex;gap:8px"><select id="vendor" required><option value="">Choose vendor…</option>${S.vendors.map((v) => `<option value="${v.id}" ${o.vendorId === v.id ? 'selected' : ''}>${esc(v.name)}${v.requiresPO ? ' (PO required)' : ''}</option>`).join('')}</select>
@@ -387,9 +394,9 @@ async function renderOrderForm(id) {
       </div></div>
 
       <div class="card">
-        <div class="card-head"><h2 class="grow">Items</h2><span class="muted small">Blank rows are ignored</span></div>
+        <div class="card-head"><h2 class="grow">Items</h2><span class="muted small" id="itemsHint">Blank rows are ignored</span></div>
         <div class="table-wrap"><table class="line-editor">
-          <thead><tr><th>Description</th><th>SKU / Part #</th><th>Unit</th><th class="num">Qty</th><th class="num">Unit price</th><th class="num">Ext.</th><th></th></tr></thead>
+          <thead id="lineHead"></thead>
           <tbody id="lineBody"></tbody>
         </table></div>
         <div class="form-foot">
@@ -408,10 +415,16 @@ async function renderOrderForm(id) {
     </form>`;
 
   const body = $('#lineBody');
+  let imported = false; // true once a PDF has filled the form
+  let impFile = null;   // the prepared PDF, attached to the order on save
   const drawLines = () => {
+    const allOn = lines.every((l) => l.include !== false);
+    $('#lineHead').innerHTML = `<tr>${imported ? `<th class="w-inc"><input type="checkbox" id="incAll" title="Include all" ${allOn ? 'checked' : ''}></th>` : ''}<th>Description</th><th>SKU / Part #</th><th>Unit</th><th class="num">Qty</th><th class="num">Unit price</th><th class="num">Ext.</th><th></th></tr>`;
+    if ($('#incAll')) $('#incAll').onchange = (e) => { lines.forEach((l) => (l.include = e.target.checked)); drawLines(); };
     body.innerHTML = lines.map((l, i) => `
-      <tr data-i="${i}">
-        <td class="w-desc"><input data-k="description" value="${esc(l.description)}" placeholder="Item description"></td>
+      <tr data-i="${i}" class="${l.imported ? 'imp' : ''} ${l.include === false ? 'excluded' : ''}">
+        ${imported ? `<td class="w-inc">${l.imported ? `<input type="checkbox" data-inc ${l.include !== false ? 'checked' : ''} title="Include this item">` : ''}</td>` : ''}
+        <td class="w-desc"><input data-k="description" value="${esc(l.description)}" placeholder="Item description">${l.imported && l.notes ? `<div class="line-note">${esc(l.notes)}</div>` : ''}</td>
         <td class="w-sku"><input data-k="sku" value="${esc(l.sku)}"></td>
         <td class="w-unit"><input data-k="unit" value="${esc(l.unit)}" placeholder="EA"></td>
         <td class="w-num"><input data-k="qty" class="num" inputmode="decimal" value="${l.qty === '' ? '' : esc(l.qty)}"></td>
@@ -421,7 +434,14 @@ async function renderOrderForm(id) {
       </tr>`).join('');
     updateTotal();
   };
-  const updateTotal = () => { $('#orderTotal').textContent = money(lines.reduce((s, l) => s + parseNum(l.qty) * parseNum(l.price), 0)); };
+  const lineTotal = () => lines.filter((l) => l.include !== false).reduce((s, l) => s + parseNum(l.qty) * parseNum(l.price), 0);
+  const updateTotal = () => {
+    $('#orderTotal').textContent = money(lineTotal());
+    if (imported) {
+      const n = lines.filter((l) => l.imported).length, on = lines.filter((l) => l.imported && l.include !== false).length;
+      $('#itemsHint').textContent = `${on} of ${n} imported items included`;
+    }
+  };
   drawLines();
 
   body.addEventListener('input', (e) => {
@@ -429,6 +449,13 @@ async function renderOrderForm(id) {
     if (!tr || !k) return;
     const l = lines[+tr.dataset.i]; l[k] = e.target.value;
     if (k === 'qty' || k === 'price') { tr.querySelector('.ext').textContent = money(parseNum(l.qty) * parseNum(l.price)); updateTotal(); }
+  });
+  body.addEventListener('change', (e) => {
+    if (!e.target.matches('[data-inc]')) return;
+    const tr = e.target.closest('tr'); lines[+tr.dataset.i].include = e.target.checked;
+    tr.classList.toggle('excluded', !e.target.checked);
+    if ($('#incAll')) $('#incAll').checked = lines.every((l) => l.include !== false);
+    updateTotal();
   });
   body.addEventListener('click', (e) => {
     const rm = e.target.closest('[data-rm]');
@@ -460,11 +487,77 @@ async function renderOrderForm(id) {
   };
   $('#vendor').onchange = poHint; $('#po').oninput = poHint; poHint();
 
-  $('#addVendor').onclick = () => vendorModal(null, (v) => {
+  const selectNewVendor = (v) => {
     const sel = $('#vendor');
-    sel.insertAdjacentHTML('beforeend', `<option value="${v.id}">${esc(v.name)}${v.requiresPO ? ' (PO required)' : ''}</option>`);
-    sel.value = v.id; poHint();
-  });
+    if (!sel.querySelector(`option[value="${v.id}"]`)) sel.insertAdjacentHTML('beforeend', `<option value="${v.id}">${esc(v.name)}${v.requiresPO ? ' (PO required)' : ''}</option>`);
+    sel.value = v.id; sel.classList.remove('filled'); poHint();
+  };
+  $('#addVendor').onclick = () => vendorModal(null, selectNewVendor);
+
+  // ---- Import from PDF ----
+  const markFilled = (sel, val) => { if (val) { $(sel).value = val; $(sel).classList.add('filled'); } };
+  $('#orderForm').addEventListener('input', (e) => e.target.classList?.remove('filled'));
+  $('#orderForm').addEventListener('change', (e) => e.target.classList?.remove('filled'));
+
+  if ($('#importFile')) $('#importFile').onchange = async (e) => {
+    const f = e.target.files[0]; e.target.value = '';
+    if (!f) return;
+    if (imported && !confirm('Replace the items and details filled from the previous file?')) return;
+    const out = $('#importOut');
+    $('#importBtn').classList.add('disabled');
+    out.innerHTML = '<div class="scan-status"><span class="spinner"></span>Reading the order… this usually takes 10–30 seconds.</div>';
+    try {
+      const prepared = await prepareFile(f);
+      const { draft } = await api('/api/import-order', { method: 'POST', body: { file: prepared } });
+      impFile = prepared;
+      applyDraft(draft, f.name);
+    } catch (err) {
+      out.innerHTML = `<div class="callout warn" style="margin-top:12px">${esc(err.message)}</div>`;
+    } finally {
+      $('#importBtn').classList.remove('disabled');
+    }
+  };
+
+  function applyDraft(d, fileName) {
+    if (d.vendorId) { $('#vendor').value = d.vendorId; $('#vendor').classList.add('filled'); }
+    markFilled('#po', d.po);
+    markFilled('#vendorOrderNo', d.vendorOrderNo);
+    markFilled('#orderDate', d.orderDate);
+    markFilled('#requested', d.requested);
+    if (!$('#orderedBy').value.trim()) markFilled('#orderedBy', d.orderedBy);
+    markFilled('#deliveryNotes', d.deliveryNotes);
+    const job = d.jobId ? jobList.find((j) => j.id === d.jobId) : null;
+    if (job) markFilled('#job', job.label);
+    matchJob(); poHint();
+
+    imported = true;
+    const kept = lines.filter((l) => !l.imported && String(l.description).trim()); // keep anything typed by hand
+    lines = [...kept, ...d.lines.map((l) => ({ ...blankLine(), description: l.description, sku: l.sku, unit: l.unit, qty: String(l.qty), price: String(l.price), notes: l.note, imported: true, include: true }))];
+    if (!lines.length) lines.push(blankLine());
+    drawLines();
+
+    const sum = lines.filter((l) => l.imported).reduce((s, l) => s + parseNum(l.qty) * parseNum(l.price), 0);
+    const parts = [];
+    parts.push(`<div class="callout ok"><b>Read ${d.lines.length} item${d.lines.length === 1 ? '' : 's'} from ${esc(fileName)}.</b> Highlighted fields came from the PDF. Check them, uncheck any items you don't want, then <b>Create order</b>. The PDF will be attached to the order.</div>`);
+    if (!d.vendorId) {
+      parts.push(d.vendorFound
+        ? `<div class="callout warn"><b>Vendor "${esc(d.vendorFound)}" isn't in your list.</b> <button type="button" class="btn sm" id="impAddVendor" style="margin-left:6px">Add as new vendor</button> or choose an existing one above.</div>`
+        : '<div class="callout warn"><b>Couldn\'t tell which vendor this is.</b> Choose it above.</div>');
+    }
+    if (job) {
+      parts.push(`<div class="callout ${d.jobConfidence === 'high' ? 'info' : 'warn'}"><b>Job: ${esc(job.label)}</b>${d.jobConfidence !== 'high' ? ` (${esc(d.jobConfidence)} confidence — please confirm)` : ''}${d.jobReason ? `<div class="small">${esc(d.jobReason)}</div>` : ''}</div>`);
+    } else {
+      parts.push(`<div class="callout warn"><b>Couldn't match a job.</b>${d.shipTo ? ` Ship-to on the PDF: ${esc(d.shipTo)}.` : ''} Choose the job above.</div>`);
+    }
+    if (d.subtotal != null && d.lines.length) {
+      parts.push(Math.abs(sum - d.subtotal) < 0.05
+        ? `<div class="callout info">Items add up to the PDF subtotal of <b>${money(d.subtotal)}</b>.</div>`
+        : `<div class="callout warn"><b>Totals don't match:</b> items add up to ${money(sum)}, but the PDF subtotal is ${money(d.subtotal)}. Check quantities and prices.</div>`);
+    }
+    if (d.warnings.length) parts.push(`<div class="callout warn"><b>Check:</b><ul>${d.warnings.map((w) => `<li>${esc(w)}</li>`).join('')}</ul></div>`);
+    $('#importOut').innerHTML = `<div style="margin-top:12px">${parts.join('')}</div>`;
+    if ($('#impAddVendor')) $('#impAddVendor').onclick = () => vendorModal({ name: d.vendorFound, requiresPO: false, ...d.vendorContact, account: '', notes: '' }, (v) => { selectNewVendor(v); $('#impAddVendor')?.closest('.callout')?.remove(); });
+  }
 
   if ($('#deleteOrder')) $('#deleteOrder').onclick = async () => {
     if (!confirm('Delete this order and all of its items? This cannot be undone.')) return;
@@ -491,17 +584,19 @@ async function renderOrderForm(id) {
         orderedBy: $('#orderedBy').value, deliveryNotes: $('#deliveryNotes').value, notes: $('#notes').value,
         cancelled: $('#cancelled')?.checked || false,
       },
-      lines: lines.map((l) => ({ id: l.id, description: l.description, sku: l.sku, unit: l.unit, qty: parseNum(l.qty), price: parseNum(l.price), notes: l.notes })),
+      lines: lines.filter((l) => l.include !== false).map((l) => ({ id: l.id, description: l.description, sku: l.sku, unit: l.unit, qty: parseNum(l.qty), price: parseNum(l.price), notes: l.notes })),
+      file: impFile || undefined,
     };
     if (!payload.lines.some((l) => String(l.description || '').trim())) {
       if (!confirm('This order has no items. Save it anyway?')) return;
     }
-    const btn = $('#saveBtn'); btn.disabled = true; btn.textContent = 'Saving…';
+    const btn = $('#saveBtn'); btn.disabled = true; btn.textContent = impFile ? 'Saving & attaching PDF…' : 'Saving…';
     try {
       store('mp_orderedBy', payload.order.orderedBy);
       const res = await api('/api/data?action=saveOrder', { method: 'POST', body: payload });
       S.stale = true;
-      toast(res.generatedPO ? `Saved — PO # ${res.generatedPO} assigned` : 'Order saved');
+      if (res.uploadWarning) toast(res.uploadWarning, 'error');
+      else toast(res.generatedPO ? `Saved — PO # ${res.generatedPO} assigned` : 'Order saved');
       location.hash = `#/order/${res.order.id}`;
     } catch (err) {
       toast(err.message, 'error'); btn.disabled = false; btn.textContent = id ? 'Save changes' : 'Create order';
@@ -509,7 +604,7 @@ async function renderOrderForm(id) {
   };
 }
 
-function blankLine() { return { id: null, description: '', sku: '', unit: '', qty: '', price: '', notes: '', delivered: 0 }; }
+function blankLine() { return { id: null, description: '', sku: '', unit: '', qty: '', price: '', notes: '', delivered: 0, include: true, imported: false }; }
 
 /* ================= Receive delivery (manual + slip scan) ================= */
 

@@ -1,10 +1,7 @@
 // Packing slip reader: /api/scan
 // Sends the slip image/PDF plus the order's line items to Claude and returns
 // structured, line-matched quantities for a person to review before saving.
-import { handler, json, readBody, requireAuth, HttpError, loadOrderDetail } from '../lib/core.mjs';
-
-const IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
-const MAX_BYTES = 4.5 * 1024 * 1024;
+import { handler, json, readBody, requireAuth, HttpError, loadOrderDetail, fileBlock, askClaudeJSON } from '../lib/core.mjs';
 
 const SYSTEM = `You read construction material packing slips / delivery tickets and match them against a purchase order.
 Return ONLY a JSON object, no markdown, no commentary.`;
@@ -53,66 +50,16 @@ Rules:
 - Never invent items. Skip freight, fuel surcharge, and pallet charges unless they appear on the order.`;
 }
 
-function parseJSON(text) {
-  const start = text.indexOf('{');
-  const end = text.lastIndexOf('}');
-  if (start < 0 || end < start) throw new Error('No JSON in response');
-  return JSON.parse(text.slice(start, end + 1));
-}
-
 export default handler(async (req) => {
   if (req.method !== 'POST') throw new HttpError(405, 'POST only');
   requireAuth(req, 'admin');
-
-  const key = process.env.ANTHROPIC_API_KEY;
-  if (!key) throw new HttpError(501, "Slip scanning isn't switched on yet. Add ANTHROPIC_API_KEY in Netlify's environment variables.");
-
   const { orderId, file } = await readBody(req);
-  if (!file?.base64) throw new HttpError(400, 'No slip file received');
-  const type = String(file.type || '').toLowerCase();
-  const isPdf = type === 'application/pdf';
-  if (!isPdf && !IMAGE_TYPES.includes(type)) throw new HttpError(400, 'Slip must be a photo (JPG/PNG) or a PDF');
-  if ((file.base64.length * 3) / 4 > MAX_BYTES) throw new HttpError(400, 'Slip file is too large (max about 4.5 MB)');
+  const block = fileBlock(file);
 
   const { order, lines } = await loadOrderDetail(orderId);
   const idByKey = Object.fromEntries(lines.map((l, i) => [`L${i + 1}`, l.id]));
 
-  const fileBlock = isPdf
-    ? { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: file.base64 } }
-    : { type: 'image', source: { type: 'base64', media_type: type, data: file.base64 } };
-
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 26000);
-  let res;
-  try {
-    res = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      signal: controller.signal,
-      headers: {
-        'x-api-key': key,
-        'anthropic-version': '2023-06-01',
-        'content-type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: process.env.CLAUDE_MODEL || 'claude-sonnet-5-5',
-        max_tokens: 4000,
-        system: SYSTEM,
-        messages: [{ role: 'user', content: [fileBlock, { type: 'text', text: buildPrompt(order, lines) }] }],
-      }),
-    });
-  } catch (e) {
-    if (e.name === 'AbortError') throw new HttpError(504, 'Reading the slip took too long. Try a clearer or smaller photo, or enter it manually.');
-    throw new HttpError(502, `Could not reach the AI service: ${e.message}`);
-  } finally {
-    clearTimeout(timer);
-  }
-
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new HttpError(502, `AI service error (${res.status}): ${data?.error?.message || res.statusText}`);
-
-  const text = (data.content || []).filter((c) => c.type === 'text').map((c) => c.text).join('');
-  let result;
-  try { result = parseJSON(text); } catch { throw new HttpError(502, "Couldn't understand the AI's reading of this slip. Try another photo or enter it manually."); }
+  const { result } = await askClaudeJSON({ block, system: SYSTEM, prompt: buildPrompt(order, lines), maxTokens: 4000, what: 'this slip' });
 
   result.items = (Array.isArray(result.items) ? result.items : []).map((it) => ({
     description: String(it.description || ''),

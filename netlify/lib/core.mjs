@@ -289,3 +289,81 @@ export async function loadOrderDetail(id) {
   for (const d of deliveries) d.lines = dlines.filter((l) => l.deliveryId === d.id);
   return { order, lines, deliveries };
 }
+
+/* ---------------- Jobs & vendors ---------------- */
+
+export async function loadJobs() {
+  const recs = await listAll(
+    CFG.jobsTable(),
+    { fields: ['Job Name', 'Number', 'Year', 'Active', 'Supervisor', 'Nearest Physical Address'], filterByFormula: '{Active}' },
+    CFG.jobsBase(),
+  );
+  const s = (v) => (v == null ? '' : String(v).trim());
+  return recs
+    .map((r) => ({
+      id: r.id,
+      name: s(r.fields['Job Name']),
+      number: s(r.fields['Number']),
+      year: s(r.fields['Year']),
+      supervisor: r.fields['Supervisor']?.name || s(r.fields['Supervisor']),
+      address: s(r.fields['Nearest Physical Address']),
+    }))
+    .filter((j) => j.name)
+    .sort((a, b) => (b.year || '').localeCompare(a.year || '') || a.name.localeCompare(b.name));
+}
+
+export async function loadVendors() {
+  return (await listAll(T.vendors)).map(mapVendor).sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/* ---------------- Claude API ---------------- */
+
+const IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
+
+/** Validates an uploaded {type, base64} file and returns a Claude content block. */
+export function fileBlock(file, maxBytes = 4.5 * 1024 * 1024) {
+  if (!file?.base64) throw new HttpError(400, 'No file received');
+  const type = String(file.type || '').toLowerCase();
+  if ((file.base64.length * 3) / 4 > maxBytes) throw new HttpError(400, 'File is too large (max about 4.5 MB)');
+  if (type === 'application/pdf') return { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: file.base64 } };
+  if (IMAGE_TYPES.includes(type)) return { type: 'image', source: { type: 'base64', media_type: type, data: file.base64 } };
+  throw new HttpError(400, 'File must be a PDF or a photo (JPG/PNG)');
+}
+
+/** Sends a file + prompt to Claude and returns the parsed JSON object from its reply. */
+export async function askClaudeJSON({ block, system, prompt, maxTokens = 4000, what = 'this document' }) {
+  const key = process.env.ANTHROPIC_API_KEY;
+  if (!key) throw new HttpError(501, "AI reading isn't switched on yet. Add ANTHROPIC_API_KEY in Netlify's environment variables.");
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 26000);
+  let res;
+  try {
+    res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      signal: controller.signal,
+      headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
+      body: JSON.stringify({
+        model: process.env.CLAUDE_MODEL || 'claude-sonnet-5-5',
+        max_tokens: maxTokens,
+        system,
+        messages: [{ role: 'user', content: [block, { type: 'text', text: prompt }] }],
+      }),
+    });
+  } catch (e) {
+    if (e.name === 'AbortError') throw new HttpError(504, `Reading ${what} took too long. Try a smaller file, or enter it manually.`);
+    throw new HttpError(502, `Could not reach the AI service: ${e.message}`);
+  } finally {
+    clearTimeout(timer);
+  }
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new HttpError(502, `AI service error (${res.status}): ${data?.error?.message || res.statusText}`);
+  const text = (data.content || []).filter((c) => c.type === 'text').map((c) => c.text).join('');
+  const a = text.indexOf('{'), b = text.lastIndexOf('}');
+  try {
+    if (a < 0 || b < a) throw new Error('no json');
+    return { result: JSON.parse(text.slice(a, b + 1)), truncated: data.stop_reason === 'max_tokens' };
+  } catch {
+    if (data.stop_reason === 'max_tokens') throw new HttpError(502, `${what[0].toUpperCase() + what.slice(1)} has more lines than can be read in one pass. Try splitting the PDF.`);
+    throw new HttpError(502, `Couldn't understand the AI's reading of ${what}. Try again or enter it manually.`);
+  }
+}

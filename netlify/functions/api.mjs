@@ -2,7 +2,7 @@
 import {
   CFG, T, HttpError, handler, json, readBody, requireAuth,
   listAll, getOne, getByIds, createMany, updateMany, deleteMany, uploadAttachment,
-  mapOrder, mapLine, mapDelivery, mapVendor, loadOrderDetail,
+  mapOrder, mapLine, mapDelivery, mapVendor, loadOrderDetail, loadJobs, loadVendors,
 } from '../lib/core.mjs';
 
 const ORDER_SUMMARY_FIELDS = [
@@ -20,28 +20,6 @@ const toNum = (v) => {
 };
 
 /* ---------------- Reads ---------------- */
-
-async function loadJobs() {
-  const recs = await listAll(
-    CFG.jobsTable(),
-    { fields: ['Job Name', 'Number', 'Year', 'Active', 'Supervisor'], filterByFormula: '{Active}' },
-    CFG.jobsBase(),
-  );
-  return recs
-    .map((r) => ({
-      id: r.id,
-      name: str(r.fields['Job Name']),
-      number: str(r.fields['Number']),
-      year: str(r.fields['Year']),
-      supervisor: r.fields['Supervisor']?.name || r.fields['Supervisor'] || '',
-    }))
-    .filter((j) => j.name)
-    .sort((a, b) => (b.year || '').localeCompare(a.year || '') || a.name.localeCompare(b.name));
-}
-
-async function loadVendors() {
-  return (await listAll(T.vendors)).map(mapVendor).sort((a, b) => a.name.localeCompare(b.name));
-}
 
 async function loadOrders() {
   return (await listAll(T.orders, { fields: ORDER_SUMMARY_FIELDS })).map(mapOrder);
@@ -61,6 +39,8 @@ async function nextPO() {
 }
 
 /* ---------------- Writes ---------------- */
+
+const MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
 
 async function saveOrder(body) {
   const h = body.order || {};
@@ -125,7 +105,23 @@ async function saveOrder(body) {
   if (toCreate.length) await createMany(T.lines, toCreate);
   if (toDelete.length) await deleteMany(T.lines, toDelete.map((l) => l.id));
 
-  return { ...(await loadOrderDetail(orderId)), generatedPO: generatedPO ? po : null };
+  let uploadWarning = null;
+  if (body.file?.base64) {
+    if ((body.file.base64.length * 3) / 4 > MAX_UPLOAD_BYTES) uploadWarning = 'Order saved, but the PDF was over 5 MB and was not attached.';
+    else {
+      try {
+        await uploadAttachment(orderId, 'Attachments', {
+          contentType: str(body.file.type, 100) || 'application/pdf',
+          base64: body.file.base64,
+          filename: str(body.file.name, 150) || 'order.pdf',
+        });
+      } catch (e) {
+        uploadWarning = `Order saved, but the PDF didn't attach: ${e.message}`;
+      }
+    }
+  }
+
+  return { ...(await loadOrderDetail(orderId)), generatedPO: generatedPO ? po : null, uploadWarning };
 }
 
 async function deleteOrder(body) {
@@ -135,8 +131,6 @@ async function deleteOrder(body) {
   await deleteMany(T.orders, [order.id]);
   return { ok: true };
 }
-
-const MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
 
 async function saveDelivery(body) {
   if (!isRec(body.orderId)) throw new HttpError(400, 'Missing order');
