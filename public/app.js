@@ -370,8 +370,8 @@ async function renderOrderForm(id) {
     <form id="orderForm" autocomplete="off">
       ${!id ? `<div class="card import-card"><div class="card-body">
         <div class="import-row">
-          <div class="grow"><b>Have this order as a PDF?</b><div class="small muted">Upload the vendor's order confirmation or quote and the form fills itself in. You review and adjust everything before anything is saved.</div></div>
-          <label class="btn dark" id="importBtn">Import from PDF<input type="file" id="importFile" accept="application/pdf,image/*" hidden></label>
+          <div class="grow"><b>Have this order as a PDF or slip?</b><div class="small muted">Upload the vendor's order confirmation or quote — or a photo of a pickup / delivery slip — and the form fills itself in. You review and adjust everything before anything is saved.</div></div>
+          <label class="btn dark" id="importBtn">Import PDF / slip<input type="file" id="importFile" accept="application/pdf,image/*" hidden></label>
         </div>
         <div id="importOut"></div>
       </div></div>` : ''}
@@ -418,10 +418,11 @@ async function renderOrderForm(id) {
 
   const body = $('#lineBody');
   let imported = false; // true once a PDF has filled the form
-  let impFile = null;   // the prepared PDF, attached to the order on save
+  let impFile = null;   // the prepared PDF/photo, attached on save
+  let recvMode = false; // pickup / already delivered: record the delivery with the order
   const drawLines = () => {
     const allOn = lines.every((l) => l.include !== false);
-    $('#lineHead').innerHTML = `<tr>${imported ? `<th class="w-inc"><input type="checkbox" id="incAll" title="Include all" ${allOn ? 'checked' : ''}></th>` : ''}<th>Description</th><th>SKU / Part #</th><th>Unit</th><th class="num">Qty</th><th class="num">Unit price</th><th class="num">Ext.</th><th></th></tr>`;
+    $('#lineHead').innerHTML = `<tr>${imported ? `<th class="w-inc"><input type="checkbox" id="incAll" title="Include all" ${allOn ? 'checked' : ''}></th>` : ''}<th>Description</th><th>SKU / Part #</th><th>Unit</th><th class="num">Qty</th>${recvMode ? '<th class="num">Rec\'d now</th>' : ''}<th class="num">Unit price</th><th class="num">Ext.</th><th></th></tr>`;
     if ($('#incAll')) $('#incAll').onchange = (e) => { lines.forEach((l) => (l.include = e.target.checked)); drawLines(); };
     body.innerHTML = lines.map((l, i) => `
       <tr data-i="${i}" class="${l.imported ? 'imp' : ''} ${l.include === false ? 'excluded' : ''}">
@@ -430,7 +431,8 @@ async function renderOrderForm(id) {
         <td class="w-sku"><input data-k="sku" value="${esc(l.sku)}"></td>
         <td class="w-unit"><input data-k="unit" value="${esc(l.unit)}" placeholder="EA"></td>
         <td class="w-num"><input data-k="qty" class="num" inputmode="decimal" value="${l.qty === '' ? '' : esc(l.qty)}"></td>
-        <td class="w-num"><input data-k="price" class="num" inputmode="decimal" value="${l.price === '' ? '' : esc(l.price)}"></td>
+        ${recvMode ? `<td class="w-num"><input data-k="recv" class="num recv-in" inputmode="decimal" value="${esc(l.recv ?? '')}" placeholder="0"></td>` : ''}
+        <td class="w-num"><input data-k="price" class="num ${l.priceMissing && parseNum(l.price) === 0 ? 'missing' : ''}" inputmode="decimal" value="${l.price === '' ? '' : esc(l.price)}"></td>
         <td class="ext">${money(parseNum(l.qty) * parseNum(l.price))}</td>
         <td>${l.delivered ? `<span class="recd" title="Can't remove: deliveries recorded">${qty(l.delivered)} rec'd</span>` : `<button type="button" class="icon-btn" data-rm="${i}" title="Remove item">×</button>`}</td>
       </tr>`).join('');
@@ -498,7 +500,7 @@ async function renderOrderForm(id) {
 
   // ---- Import from PDF ----
   const markFilled = (sel, val) => { if (val) { $(sel).value = val; $(sel).classList.add('filled'); } };
-  $('#orderForm').addEventListener('input', (e) => e.target.classList?.remove('filled'));
+  $('#orderForm').addEventListener('input', (e) => e.target.classList?.remove('filled', 'missing'));
   $('#orderForm').addEventListener('change', (e) => e.target.classList?.remove('filled'));
 
   if ($('#importFile')) $('#importFile').onchange = async (e) => {
@@ -534,13 +536,27 @@ async function renderOrderForm(id) {
 
     imported = true;
     const kept = lines.filter((l) => !l.imported && String(l.description).trim()); // keep anything typed by hand
-    lines = [...kept, ...d.lines.map((l) => ({ ...blankLine(), description: l.description, sku: l.sku, unit: l.unit, qty: String(l.qty), price: String(l.price), notes: l.note, imported: true, include: true }))];
+    lines = [...kept, ...d.lines.map((l) => ({ ...blankLine(), description: l.description, sku: l.sku, unit: l.unit, qty: String(l.qty), price: l.priceMissing ? '' : String(l.price), priceMissing: l.priceMissing, recv: String(l.qtyShipped ?? l.qty), notes: l.note, imported: true, include: true }))];
+    recvMode = !!d.isSlip;
     if (!lines.length) lines.push(blankLine());
     drawLines();
 
     const sum = lines.filter((l) => l.imported).reduce((s, l) => s + parseNum(l.qty) * parseNum(l.price), 0);
     const parts = [];
-    parts.push(`<div class="callout ok"><b>Read ${d.lines.length} item${d.lines.length === 1 ? '' : 's'} from ${esc(fileName)}.</b> Highlighted fields came from the PDF. Check them, uncheck any items you don't want, then <b>Create order</b>. The PDF will be attached to the order.</div>`);
+    parts.push(`<div class="callout ok"><b>Read ${d.lines.length} item${d.lines.length === 1 ? '' : 's'} from ${esc(fileName)}.</b> Highlighted fields came from the ${d.isSlip ? 'slip' : 'PDF'}. Check them, uncheck any items you don't want, then <b>Create order</b>. The file will be attached ${d.isSlip ? 'to the delivery' : 'to the order'}.</div>`);
+    if (d.isSlip) {
+      parts.push(`<div class="callout recv-box">
+        <label class="check"><input type="checkbox" id="recvToggle" checked> Already picked up / delivered — mark these items received</label>
+        <div class="grid c3" id="recvFields" style="margin-top:10px">
+          <label class="field"><span>Received date</span><input type="date" id="rcvDate" value="${esc(d.deliveryDate || d.orderDate || today())}"></label>
+          <label class="field"><span>Slip / ticket #</span><input id="rcvSlip" value="${esc(d.slipNo || '')}"></label>
+          <label class="field"><span>Received by</span><input id="rcvBy" value="${esc(store('mp_receivedBy') || '')}"></label>
+        </div>
+        <div class="small muted" style="margin-top:6px">Uncheck if this slip is for an order that hasn't arrived yet. "Rec'd now" quantities are what came with this slip.</div>
+      </div>`);
+    }
+    const noPrice = d.lines.filter((l) => l.priceMissing).length;
+    if (noPrice) parts.push(`<div class="callout warn"><b>${noPrice} item${noPrice === 1 ? ' has' : 's have'} no price on the ${d.isSlip ? 'slip' : 'document'}.</b> ${noPrice === 1 ? 'It' : 'They'}'ll save at $0.00 — add prices now, or later with Edit order when the invoice comes.</div>`);
     if (!d.vendorId) {
       parts.push(d.vendorFound
         ? `<div class="callout warn"><b>Vendor "${esc(d.vendorFound)}" isn't in your list.</b> <button type="button" class="btn sm" id="impAddVendor" style="margin-left:6px">Add as new vendor</button> or choose an existing one above.</div>`
@@ -558,6 +574,8 @@ async function renderOrderForm(id) {
     }
     if (d.warnings.length) parts.push(`<div class="callout warn"><b>Check:</b><ul>${d.warnings.map((w) => `<li>${esc(w)}</li>`).join('')}</ul></div>`);
     $('#importOut').innerHTML = `<div style="margin-top:12px">${parts.join('')}</div>`;
+    if ($('#recvToggle')) $('#recvToggle').onchange = (e) => { recvMode = e.target.checked; $('#recvFields').hidden = !recvMode; drawLines(); setSaveLabel(); };
+    setSaveLabel();
     if ($('#impAddVendor')) $('#impAddVendor').onclick = () => vendorModal({ name: d.vendorFound, requiresPO: false, ...d.vendorContact, account: '', notes: '' }, (v) => { selectNewVendor(v); $('#impAddVendor')?.closest('.callout')?.remove(); });
   }
 
@@ -566,6 +584,8 @@ async function renderOrderForm(id) {
     try { await api('/api/data?action=deleteOrder', { method: 'POST', body: { id } }); S.stale = true; toast('Order deleted'); location.hash = '#/'; }
     catch (err) { toast(err.message, 'error'); }
   };
+
+  function setSaveLabel() { $('#saveBtn').textContent = id ? 'Save changes' : recvMode ? 'Create order & mark received' : 'Create order'; }
 
   $('#orderForm').onsubmit = async (e) => {
     e.preventDefault();
@@ -586,27 +606,32 @@ async function renderOrderForm(id) {
         orderedBy: $('#orderedBy').value, deliveryNotes: $('#deliveryNotes').value, notes: $('#notes').value,
         cancelled: $('#cancelled')?.checked || false,
       },
-      lines: lines.filter((l) => l.include !== false).map((l) => ({ id: l.id, description: l.description, sku: l.sku, unit: l.unit, qty: parseNum(l.qty), price: parseNum(l.price), notes: l.notes })),
+      lines: lines.filter((l) => l.include !== false).map((l) => ({ id: l.id, description: l.description, sku: l.sku, unit: l.unit, qty: parseNum(l.qty), price: parseNum(l.price), notes: l.notes, receiveQty: recvMode ? parseNum(l.recv) : undefined })),
       file: impFile || undefined,
+      receive: recvMode && !id ? { date: $('#rcvDate')?.value, slipNo: $('#rcvSlip')?.value, receivedBy: $('#rcvBy')?.value } : undefined,
     };
+    if (payload.receive) {
+      store('mp_receivedBy', payload.receive.receivedBy);
+      if (!payload.lines.some((l) => l.receiveQty)) { if (!confirm('No "Rec\'d now" quantities are filled in. Create the order without recording a delivery?')) return; payload.receive = undefined; }
+    }
     if (!payload.lines.some((l) => String(l.description || '').trim())) {
       if (!confirm('This order has no items. Save it anyway?')) return;
     }
-    const btn = $('#saveBtn'); btn.disabled = true; btn.textContent = impFile ? 'Saving & attaching PDF…' : 'Saving…';
+    const btn = $('#saveBtn'); btn.disabled = true; btn.textContent = impFile ? 'Saving & attaching file…' : 'Saving…';
     try {
       store('mp_orderedBy', payload.order.orderedBy);
       const res = await api('/api/data?action=saveOrder', { method: 'POST', body: payload });
       S.stale = true;
       if (res.uploadWarning) toast(res.uploadWarning, 'error');
-      else toast(res.generatedPO ? `Saved — PO # ${res.generatedPO} assigned` : 'Order saved');
+      else toast([res.received ? 'Order created and marked received' : 'Order saved', res.generatedPO ? `PO # ${res.generatedPO} assigned` : ''].filter(Boolean).join(' — '));
       location.hash = `#/order/${res.order.id}`;
     } catch (err) {
-      toast(err.message, 'error'); btn.disabled = false; btn.textContent = id ? 'Save changes' : 'Create order';
+      toast(err.message, 'error'); btn.disabled = false; setSaveLabel();
     }
   };
 }
 
-function blankLine() { return { id: null, description: '', sku: '', unit: '', qty: '', price: '', notes: '', delivered: 0, include: true, imported: false }; }
+function blankLine() { return { id: null, description: '', sku: '', unit: '', qty: '', price: '', recv: '', notes: '', delivered: 0, include: true, imported: false, priceMissing: false }; }
 
 /* ================= Receive delivery (manual + slip scan) ================= */
 

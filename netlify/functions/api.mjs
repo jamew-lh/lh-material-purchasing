@@ -81,6 +81,7 @@ async function saveOrder(body) {
   const existingIds = new Set(existing.map((l) => l.id));
   const keepIds = new Set();
   const toCreate = [], toUpdate = [];
+  const createRecv = []; // qty received now, parallel to toCreate (pickup / already-delivered orders)
   lines.forEach((l, i) => {
     const desc = str(l.description, 300);
     if (!desc) return; // skip blank rows
@@ -94,7 +95,7 @@ async function saveOrder(body) {
       'Sort': i + 1,
     };
     if (l.id && existingIds.has(l.id)) { keepIds.add(l.id); toUpdate.push({ id: l.id, fields: f }); }
-    else toCreate.push({ ...f, 'Order': [orderId] });
+    else { toCreate.push({ ...f, 'Order': [orderId] }); createRecv.push(toNum(l.receiveQty)); }
   });
   const toDelete = existing.filter((l) => !keepIds.has(l.id));
   const blocked = toDelete.filter((l) => l.delivered !== 0);
@@ -102,26 +103,49 @@ async function saveOrder(body) {
     throw new HttpError(400, `Can't remove "${blocked[0].description}" because deliveries have been recorded against it. Set its quantity instead, or delete those deliveries first.`);
   }
   if (toUpdate.length) await updateMany(T.lines, toUpdate);
-  if (toCreate.length) await createMany(T.lines, toCreate);
+  const created = toCreate.length ? await createMany(T.lines, toCreate) : [];
   if (toDelete.length) await deleteMany(T.lines, toDelete.map((l) => l.id));
+
+  // Picked up / already delivered: record the delivery in the same save, slip attached to it
+  let deliveryId = null;
+  const rcv = body.receive;
+  if (rcv && !h.id) {
+    const dl = created.map((rec, i) => ({ rec, qty: createRecv[i] })).filter((x) => x.qty !== 0);
+    deliveryId = (await createMany(T.deliveries, [{
+      'Slip #': str(rcv.slipNo, 80),
+      'Delivery Date': dateOrNull(rcv.date) || dateOrNull(h.orderDate),
+      'Received By': str(rcv.receivedBy, 100),
+      'Notes': str(rcv.notes, 5000),
+      'Entry Method': 'Slip Scan',
+      'Order': [orderId],
+    }]))[0].id;
+    if (dl.length) {
+      await createMany(T.dlines, dl.map(({ rec, qty }) => ({
+        'Item': rec.fields['Description'] || '',
+        'Qty Received': qty,
+        'Delivery': [deliveryId],
+        'Order Line': [rec.id],
+      })));
+    }
+  }
 
   let uploadWarning = null;
   if (body.file?.base64) {
-    if ((body.file.base64.length * 3) / 4 > MAX_UPLOAD_BYTES) uploadWarning = 'Order saved, but the PDF was over 5 MB and was not attached.';
+    if ((body.file.base64.length * 3) / 4 > MAX_UPLOAD_BYTES) uploadWarning = 'Order saved, but the file was over 5 MB and was not attached.';
     else {
       try {
-        await uploadAttachment(orderId, 'Attachments', {
+        await uploadAttachment(deliveryId || orderId, deliveryId ? 'Packing Slip' : 'Attachments', {
           contentType: str(body.file.type, 100) || 'application/pdf',
           base64: body.file.base64,
-          filename: str(body.file.name, 150) || 'order.pdf',
+          filename: str(body.file.name, 150) || (deliveryId ? 'packing-slip' : 'order.pdf'),
         });
       } catch (e) {
-        uploadWarning = `Order saved, but the PDF didn't attach: ${e.message}`;
+        uploadWarning = `Order saved, but the file didn't attach: ${e.message}`;
       }
     }
   }
 
-  return { ...(await loadOrderDetail(orderId)), generatedPO: generatedPO ? po : null, uploadWarning };
+  return { ...(await loadOrderDetail(orderId)), generatedPO: generatedPO ? po : null, uploadWarning, received: !!deliveryId };
 }
 
 async function deleteOrder(body) {

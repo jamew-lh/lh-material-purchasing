@@ -40,7 +40,8 @@ Read the attached order document and return this JSON:
       "description": string,
       "sku": string or null,               // item / part / product number
       "unit": string or null,              // EA, FT, LF, JT, BOX, etc.
-      "qty": number,                       // quantity ordered
+      "qty": number,                       // quantity ordered (on a slip with no ordered column: the quantity shipped / picked up)
+      "qty_shipped": number or null,       // packing/delivery/pickup slips only: quantity shipped or handed over on THIS slip
       "unit_price": number or null,        // price per unit (per the unit above)
       "ext_price": number or null,         // line total as printed
       "note": string or null               // e.g. "price per 100", "backordered", "special order"
@@ -48,7 +49,9 @@ Read the attached order document and return this JSON:
   ],
   "subtotal": number or null,              // merchandise subtotal as printed (before tax/freight)
   "total": number or null,
-  "document_type": "order confirmation" | "quote" | "invoice" | "packing slip" | "other",
+  "document_type": "order confirmation" | "quote" | "invoice" | "packing slip" | "other",   // packing slip includes delivery tickets, pickup / counter tickets, will-call slips
+  "slip_number": string or null,           // packing slip / delivery ticket / pickup ticket number (slips only)
+  "delivery_date": "YYYY-MM-DD" or null,   // ship / delivery / pickup date printed on a slip
   "warnings": [string]
 }
 
@@ -58,7 +61,8 @@ Rules:
 - If unit_price is missing but ext_price and qty are present, set unit_price = ext_price / qty.
 - Match the vendor by company name (ignore Inc/LLC/Co, abbreviations). Match the job by job name, job number, or ship-to address; use null when unsure rather than guessing.
 - Dates: convert to YYYY-MM-DD. Leave null if not printed.
-- If this looks like a quote (not a confirmed order), or an invoice, or a packing slip, say so in warnings.
+- If this looks like a quote (not a confirmed order), say so in warnings. Packing slips, delivery tickets and pickup tickets are expected; don't warn about them.
+- On a slip, if a line shows ordered, shipped and backordered columns, qty = ordered and qty_shipped = shipped. Prices are often not printed on slips: leave unit_price null rather than guessing.
 - Never invent values.`;
 }
 
@@ -86,7 +90,8 @@ export default handler(async (req) => {
       let price = num(l.unit_price);
       const ext = num(l.ext_price);
       if (price == null && ext != null && qty) price = Math.round((ext / qty) * 10000) / 10000;
-      return { description: s(l.description), sku: s(l.sku), unit: s(l.unit), qty, price: price ?? 0, ext, note: s(l.note) };
+      const shipped = num(l.qty_shipped);
+      return { description: s(l.description), sku: s(l.sku), unit: s(l.unit), qty, price: price ?? 0, priceMissing: price == null, ext, qtyShipped: shipped ?? qty, note: s(l.note) };
     })
     .filter((l) => l.description);
 
@@ -112,6 +117,9 @@ export default handler(async (req) => {
       subtotal: num(r.subtotal),
       total: num(r.total),
       documentType: s(r.document_type),
+      isSlip: /packing slip/i.test(s(r.document_type)),
+      slipNo: s(r.slip_number),
+      deliveryDate: date(r.delivery_date),
       warnings,
     },
   });
