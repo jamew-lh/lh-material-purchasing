@@ -68,11 +68,12 @@ function signOut() {
 
 function renderLogin() {
   document.getElementById('topbar').hidden = true;
+  document.getElementById('tabbar').hidden = true;
   app.className = '';
   app.innerHTML = `
     <div class="login">
       <div class="card">
-        <span class="brand-mark" style="display:block;width:40px;height:40px;border-radius:10px"></span>
+        <img src="/logo.png" alt="Lyons &amp; Hohl Site Contractors" class="login-logo">
         <h1>Material Purchasing</h1>
         <div class="muted">Sign in to view job site orders.</div>
         <form id="loginForm">
@@ -120,19 +121,20 @@ const vendorById = (id) => S.vendors.find((v) => v.id === id);
 
 function nav() {
   const hash = location.hash || '#/';
-  const on = (p) => (hash === p || (p !== '#/' && hash.startsWith(p)) ? 'active' : '');
+  const sel = (yes) => `aria-selected="${yes ? 'true' : 'false'}"`;
+  const onOrders = hash === '#/' || hash === '#' || /^#\/(order|edit|receive)/.test(hash);
   $('#topnav').innerHTML = `
-    <a href="#/" class="${hash === '#/' || hash.startsWith('#/order') ? 'active' : ''}">Orders</a>
-    <a href="#/vendors" class="${on('#/vendors')}">Vendors</a>
-    ${isAdmin() ? '<a href="#/new" class="btn-new">+ New Order</a>' : ''}
-    <span class="role">${isAdmin() ? 'Admin' : 'View only'}</span>
-    <button id="signOutBtn" type="button">Sign out</button>`;
+    <a role="tab" href="#/" ${sel(onOrders)}>Orders</a>
+    <a role="tab" href="#/vendors" ${sel(hash.startsWith('#/vendors'))}>Vendors</a>
+    ${isAdmin() ? `<a role="tab" href="#/new" class="tab-new" ${sel(hash.startsWith('#/new'))}>+ New Order</a>` : ''}`;
+  $('#who').innerHTML = `${isAdmin() ? 'Admin' : 'View only'} · <button type="button" class="linkbtn" id="signOutBtn">Sign out</button>`;
   $('#signOutBtn').onclick = signOut;
 }
 
 async function render() {
   if (!S.token) return renderLogin();
   document.getElementById('topbar').hidden = false;
+  document.getElementById('tabbar').hidden = false;
   app.className = 'app';
   nav();
   const parts = (location.hash || '#/').replace(/^#\/?/, '').split('/');

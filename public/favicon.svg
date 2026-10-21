@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="52 70 408 408">
+  <rect width="512" height="512" fill="#004745"/>
+  <!-- ground -->
+  <rect x="72" y="358" width="368" height="11" rx="5.5" fill="#D4A070" opacity=".5"/>
+  <!-- bell-and-spigot pipe section lying on the ground, open spigot end toward the viewer -->
+  <g transform="translate(-3 -8)">
+    <!-- bell: far end, a shade darker -->
+    <ellipse cx="414" cy="274" rx="30" ry="80" fill="#a97d52"/>
+    <rect x="364" y="194" width="50" height="160" fill="#c08f5e"/>
+    <!-- taper from barrel up to the bell -->
+    <path d="M326 212 L364 194 L364 354 L326 336 Z" fill="#c99662"/>
+    <!-- barrel -->
+    <rect x="104" y="212" width="224" height="124" fill="#D4A070"/>
+    <!-- highlight along the top -->
+    <rect x="116" y="228" width="200" height="13" rx="6.5" fill="#ECCDAC" opacity=".85"/>
+    <rect x="370" y="210" width="38" height="11" rx="5.5" fill="#ECCDAC" opacity=".55"/>
+    <!-- open spigot end: wall ring and dark bore -->
+    <ellipse cx="104" cy="274" rx="30" ry="62" fill="#ECCDAC"/>
+    <ellipse cx="106" cy="274" rx="20" ry="46" fill="#00302e"/>
+  </g>
+</svg>

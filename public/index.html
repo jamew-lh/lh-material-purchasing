@@ -3,21 +3,29 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#1f2a33">
-  <title>Material Purchasing</title>
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23e8711c'/%3E%3Cpath d='M8 12l8-4 8 4v9l-8 4-8-4z' fill='none' stroke='white' stroke-width='2.2' stroke-linejoin='round'/%3E%3Cpath d='M8 12l8 4 8-4M16 16v9' fill='none' stroke='white' stroke-width='2.2'/%3E%3C/svg%3E">
-  <link rel="stylesheet" href="styles.css">
+  <title>Material Purchasing · Lyons &amp; Hohl</title>
+  <meta name="robots" content="noindex">
+  <meta name="theme-color" content="#ffffff">
+  <link rel="icon" href="/favicon.svg?v=1" type="image/svg+xml">
+  <link rel="icon" href="/favicon-32.png?v=1" sizes="32x32" type="image/png">
+  <link rel="shortcut icon" href="/favicon.ico?v=1">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png?v=1">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Purchasing">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@100..125,400..800&family=JetBrains+Mono:wght@500;600&display=swap">
+  <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
-  <header class="topbar" id="topbar" hidden>
-    <a href="#/" class="brand">
-      <span class="brand-mark" aria-hidden="true"></span>
-      <span>Material Purchasing</span>
-    </a>
-    <nav class="topnav" id="topnav"></nav>
-  </header>
+  <header class="top" id="topbar" hidden><div class="in">
+    <a href="#/" class="logo-link"><img src="/logo.png" alt="Lyons &amp; Hohl Site Contractors" width="152" height="46"></a>
+    <div class="what">MATERIAL PURCHASING<small id="who"></small></div>
+  </div></header>
+  <nav class="tabbar" id="tabbar" aria-label="Screens" hidden><div class="tabs" id="topnav"></div></nav>
   <main id="app" class="app"></main>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
-  <script src="app.js"></script>
+  <script src="/app.js"></script>
 </body>
 </html>
