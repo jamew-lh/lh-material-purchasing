@@ -1,0 +1,8 @@
+{
+  "name": "material-purchasing",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Central purchasing hub for job site material orders (Netlify + Airtable)",
+  "engines": { "node": ">=20" }
+}
