@@ -3,7 +3,7 @@
 Central hub for job site material orders. Search orders by job, vendor, PO # or vendor order #; see items, pricing, quantities ordered / delivered / remaining; record deliveries (with packing slip photos read automatically by AI); create and edit orders.
 
 - **Front end:** `public/` (plain HTML/CSS/JS, no build step)
-- **Back end:** Netlify Functions in `netlify/functions/` — they hold the secret keys and talk to Airtable and the Claude API
+- **Back end:** Netlify Functions in `netlify/functions/` — they hold the secret keys and talk to Airtable and the Claude API. AI reading runs as a Netlify **background function** (up to 15 minutes), with picked pages staged in **Netlify Blobs** (both built in; nothing to set up).
 - **Data:** Airtable base **Material Purchasing** (Dispatch workspace). Jobs are read from the existing **Job Name List** base (active jobs only).
 
 ## Airtable structure
@@ -64,8 +64,9 @@ After adding or changing variables: **Deploys → Trigger deploy → Deploy site
 - **View-only users** can search and see everything but can't change anything.
 
 ## Limits worth knowing
-- Photos are shrunk in the browser before upload; PDFs must be under ~4.4 MB.
+- **Multi-page documents:** add every page (photos and/or PDFs, up to 10) before tapping **Read** — they're read together as one document and all attached on save. One photo no longer starts reading on its own.
+- Photos are shrunk in the browser before upload; each PDF must be under ~5 MB.
+- Reading runs in the background, so long orders no longer time out — the screen shows a running timer. If background functions aren't available on the Netlify plan, the app falls back to a quick direct read (about 25-second limit).
+- Pages picked but never saved are cleaned up automatically after two days.
 - Job matching from a PDF works best when the job's address is filled in on the Job Name List ("Nearest Physical Address").
-- Very long order PDFs (100+ lines) may not finish within the time limit — split them if that happens.
-- Slip and order reading must finish within Netlify's function time limit (about 30 seconds). Normally takes 10–20 seconds.
 - Airtable attachment links expire after a couple of hours, so the app always fetches fresh ones when you open an order.

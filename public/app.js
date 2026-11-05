@@ -1,5 +1,5 @@
 /* Material Purchasing — single-page front end.
-   Talks to Netlify Functions at /api/login, /api/data, /api/scan. */
+   Talks to Netlify Functions at /api/login, /api/data, /api/ai. */
 'use strict';
 
 /* ================= State & utilities ================= */
@@ -370,9 +370,9 @@ async function renderOrderForm(id) {
     <form id="orderForm" autocomplete="off">
       ${!id ? `<div class="card import-card"><div class="card-body">
         <div class="import-row">
-          <div class="grow"><b>Have this order as a PDF or slip?</b><div class="small muted">Upload the vendor's order confirmation or quote — or a photo of a pickup / delivery slip — and the form fills itself in. You review and adjust everything before anything is saved.</div></div>
-          <label class="btn dark" id="importBtn">Import PDF / slip<input type="file" id="importFile" accept="application/pdf,image/*" hidden></label>
+          <div class="grow"><b>Have this order as a PDF or slip?</b><div class="small muted">Upload the vendor's order confirmation or quote — or photos of a pickup / delivery slip — and the form fills itself in. Add every page first, then tap Read. You review and adjust everything before anything is saved.</div></div>
         </div>
+        <div id="impPages" class="pages-wrap"></div>
         <div id="importOut"></div>
       </div></div>` : ''}
       <div class="card"><div class="card-body grid c4">
@@ -418,7 +418,8 @@ async function renderOrderForm(id) {
 
   const body = $('#lineBody');
   let imported = false; // true once a PDF has filled the form
-  let impFile = null;   // the prepared PDF/photo, attached on save
+  let impPicker = null; // pages picked for import (attached on save)
+  let impRead = null;   // {uploadId, version}: the staged upload that was read
   let recvMode = false; // pickup / already delivered: record the delivery with the order
   const drawLines = () => {
     const allOn = lines.every((l) => l.include !== false);
@@ -503,24 +504,30 @@ async function renderOrderForm(id) {
   $('#orderForm').addEventListener('input', (e) => e.target.classList?.remove('filled', 'missing'));
   $('#orderForm').addEventListener('change', (e) => e.target.classList?.remove('filled'));
 
-  if ($('#importFile')) $('#importFile').onchange = async (e) => {
-    const f = e.target.files[0]; e.target.value = '';
-    if (!f) return;
-    if (imported && !confirm('Replace the items and details filled from the previous file?')) return;
-    const out = $('#importOut');
-    $('#importBtn').classList.add('disabled');
-    out.innerHTML = '<div class="scan-status"><span class="spinner"></span>Reading the order… this usually takes 10–30 seconds.</div>';
-    try {
-      const prepared = await prepareFile(f);
-      const { draft } = await api('/api/import-order', { method: 'POST', body: { file: prepared } });
-      impFile = prepared;
-      applyDraft(draft, f.name);
-    } catch (err) {
-      out.innerHTML = `<div class="callout warn" style="margin-top:12px">${esc(err.message)}</div>`;
-    } finally {
-      $('#importBtn').classList.remove('disabled');
-    }
-  };
+  if ($('#impPages')) {
+    impPicker = pagePicker($('#impPages'), {
+      emptyLabel: 'Import PDF / photos',
+      readLabel: (n) => `Read ${n === 1 ? 'it' : `${n} pages`}`,
+      onRead: async () => {
+        if (imported && !confirm('Replace the items and details filled from the previous file?')) return;
+        const out = $('#importOut');
+        impPicker.busy(true);
+        const version = impPicker.version;
+        try {
+          const { uploadId, result } = await readPages('import', impPicker.pages, '', (msg) => {
+            out.innerHTML = `<div class="scan-status"><span class="spinner"></span>${esc(msg)}</div>`;
+          });
+          impRead = { uploadId, version };
+          const names = impPicker.pages.length > 1 ? `${impPicker.pages.length} pages` : impPicker.pages[0].name;
+          applyDraft(result.draft, names);
+        } catch (err) {
+          out.innerHTML = `<div class="callout warn" style="margin-top:12px">${esc(err.message)}</div>`;
+        } finally {
+          impPicker.busy(false);
+        }
+      },
+    });
+  }
 
   function applyDraft(d, fileName) {
     if (d.vendorId) { $('#vendor').value = d.vendorId; $('#vendor').classList.add('filled'); }
@@ -607,7 +614,6 @@ async function renderOrderForm(id) {
         cancelled: $('#cancelled')?.checked || false,
       },
       lines: lines.filter((l) => l.include !== false).map((l) => ({ id: l.id, description: l.description, sku: l.sku, unit: l.unit, qty: parseNum(l.qty), price: parseNum(l.price), notes: l.notes, receiveQty: recvMode ? parseNum(l.recv) : undefined })),
-      file: impFile || undefined,
       receive: recvMode && !id ? { date: $('#rcvDate')?.value, slipNo: $('#rcvSlip')?.value, receivedBy: $('#rcvBy')?.value } : undefined,
     };
     if (payload.receive) {
@@ -617,8 +623,14 @@ async function renderOrderForm(id) {
     if (!payload.lines.some((l) => String(l.description || '').trim())) {
       if (!confirm('This order has no items. Save it anyway?')) return;
     }
-    const btn = $('#saveBtn'); btn.disabled = true; btn.textContent = impFile ? 'Saving & attaching file…' : 'Saving…';
+    const pages = impPicker?.pages || [];
+    const btn = $('#saveBtn'); btn.disabled = true; btn.textContent = pages.length ? 'Saving & attaching files…' : 'Saving…';
     try {
+      if (pages.length) {
+        payload.uploadId = impRead && impRead.version === impPicker.version
+          ? impRead.uploadId
+          : await uploadPages('stage', pages, '', (m) => (btn.textContent = m));
+      }
       store('mp_orderedBy', payload.order.orderedBy);
       const res = await api('/api/data?action=saveOrder', { method: 'POST', body: payload });
       S.stale = true;
@@ -649,7 +661,7 @@ async function renderReceive(orderId, deliveryId) {
     return { ...l, prev, open: l.qty - prev, recv: thisQty[l.id] ?? '', note: thisNote[l.id] || '', filled: false };
   });
 
-  const st = { file: null, prepared: null, scan: null, method: editing?.method === 'Slip Scan' ? 'Slip Scan' : 'Manual', scanning: false };
+  const st = { picker: null, read: null, scan: null, method: editing?.method === 'Slip Scan' ? 'Slip Scan' : 'Manual' };
 
   app.innerHTML = `
     <a class="back" href="#/order/${o.id}">← Back to ${esc(o.ref)}</a>
@@ -658,19 +670,9 @@ async function renderReceive(orderId, deliveryId) {
       <div class="card">
         <div class="card-head"><h2 class="grow">Packing slip</h2></div>
         <div class="card-body">
-          <label class="dropzone" id="drop">
-            <div class="preview" id="preview">${editing?.slip?.[0]?.thumb ? `<img src="${esc(editing.slip[0].thumb)}" alt="">` : 'SLIP'}</div>
-            <div class="grow">
-              <div class="fname" id="fname">${editing?.slip?.length ? `${editing.slip.length} file(s) already attached` : 'Take a photo or choose a file'}</div>
-              <div class="small muted">Photo (JPG/PNG) or PDF. ${editing?.slip?.length ? 'A new file will be added alongside the existing one.' : 'It will be saved with this delivery.'}</div>
-            </div>
-            <span class="btn">Choose…</span>
-            <input type="file" id="file" accept="image/*,application/pdf" hidden>
-          </label>
-          <div style="margin-top:12px;display:flex;gap:10px;flex-wrap:wrap;align-items:center">
-            <button type="button" class="btn dark" id="scanBtn" disabled>Read slip automatically</button>
-            <span class="small muted">Fills in the slip #, date and quantities for you to check.</span>
-          </div>
+          ${editing?.slip?.length ? `<div class="small muted" style="margin-bottom:8px">${editing.slip.length} file(s) already attached to this delivery. Pages added here are attached alongside them.</div>` : ''}
+          <div id="slipPages" class="pages-wrap"></div>
+          <div class="small muted" style="margin-top:8px">Add every page of the slip, then tap Read to fill in the slip #, date and quantities for you to check.</div>
           <div id="scanOut"></div>
         </div>
       </div>
@@ -723,46 +725,28 @@ async function renderReceive(orderId, deliveryId) {
   $('#fillAll').onclick = () => { rows.forEach((r) => { if (r.open > 0) { r.recv = String(r.open); r.filled = false; } }); drawRows(); };
   $('#clearAll').onclick = () => { rows.forEach((r) => { r.recv = ''; r.filled = false; }); drawRows(); };
 
-  // ---- File handling ----
-  const fileInput = $('#file');
-  const drop = $('#drop');
-  const takeFile = async (f) => {
-    if (!f) return;
-    st.file = f; st.prepared = null; st.scan = null;
-    $('#fname').textContent = f.name;
-    $('#preview').innerHTML = f.type.startsWith('image/') ? `<img src="${URL.createObjectURL(f)}" alt="">` : 'PDF';
-    $('#scanOut').innerHTML = '';
-    try {
-      st.prepared = await prepareFile(f);
-      $('#scanBtn').disabled = false;
-    } catch (err) {
-      st.file = null;
-      $('#fname').textContent = 'Take a photo or choose a file';
-      $('#preview').textContent = 'SLIP';
-      toast(err.message, 'error');
-    }
-  };
-  fileInput.onchange = () => takeFile(fileInput.files[0]);
-  ['dragenter', 'dragover'].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add('drag'); }));
-  ['dragleave', 'drop'].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove('drag'); }));
-  drop.addEventListener('drop', (e) => takeFile(e.dataTransfer.files[0]));
-
-  // ---- Slip scan ----
-  $('#scanBtn').onclick = async () => {
-    if (!st.prepared || st.scanning) return;
-    st.scanning = true;
-    $('#scanBtn').disabled = true;
-    $('#scanOut').innerHTML = '<div class="scan-status"><span class="spinner"></span>Reading the packing slip… this usually takes 10–20 seconds.</div>';
-    try {
-      const { result } = await api('/api/scan', { method: 'POST', body: { orderId: o.id, file: st.prepared } });
-      st.scan = result; st.method = 'Slip Scan';
-      applyScan(result);
-    } catch (err) {
-      $('#scanOut').innerHTML = `<div class="callout warn" style="margin-top:12px">${esc(err.message)}</div>`;
-    } finally {
-      st.scanning = false; $('#scanBtn').disabled = !st.prepared;
-    }
-  };
+  // ---- Slip pages + scan ----
+  st.picker = pagePicker($('#slipPages'), {
+    emptyLabel: 'Add slip photo / PDF',
+    readLabel: (n) => `Read slip${n > 1 ? ` (${n} pages)` : ''}`,
+    onChange: () => { $('#scanOut').innerHTML = ''; },
+    onRead: async () => {
+      st.picker.busy(true);
+      const version = st.picker.version;
+      try {
+        const { uploadId, result } = await readPages('scan', st.picker.pages, o.id, (msg) => {
+          $('#scanOut').innerHTML = `<div class="scan-status"><span class="spinner"></span>${esc(msg)}</div>`;
+        });
+        st.read = { uploadId, version };
+        st.scan = result.result; st.method = 'Slip Scan';
+        applyScan(result.result);
+      } catch (err) {
+        $('#scanOut').innerHTML = `<div class="callout warn" style="margin-top:12px">${esc(err.message)}</div>`;
+      } finally {
+        st.picker.busy(false);
+      }
+    },
+  });
 
   function applyScan(r) {
     if (r.slip_number && !$('#slipNo').value) $('#slipNo').value = r.slip_number;
@@ -831,21 +815,28 @@ async function renderReceive(orderId, deliveryId) {
   $('#recvForm').onsubmit = async (e) => {
     e.preventDefault();
     const payloadLines = rows.filter((r) => r.recv !== '' && parseNum(r.recv) !== 0).map((r) => ({ orderLineId: r.id, item: r.description, qty: parseNum(r.recv), notes: r.note }));
-    if (!payloadLines.length && !st.prepared && !editing) return toast('Enter at least one quantity received', 'error');
+    const pages = st.picker.pages;
+    if (!payloadLines.length && !pages.length && !editing) return toast('Enter at least one quantity received', 'error');
     const overs = rows.filter((r) => r.recv !== '' && parseNum(r.recv) > r.open);
     if (overs.length && !confirm(`${overs.length} item(s) exceed the open quantity (over-delivery). Save anyway?`)) return;
 
-    const btn = $('#saveRecv'); btn.disabled = true; btn.textContent = st.prepared ? 'Saving & uploading slip…' : 'Saving…';
+    const btn = $('#saveRecv'); btn.disabled = true; btn.textContent = pages.length ? 'Saving & uploading slip…' : 'Saving…';
     const receivedBy = $('#receivedBy').value;
     store('mp_receivedBy', receivedBy);
     try {
+      let uploadId;
+      if (pages.length) {
+        uploadId = st.read && st.read.version === st.picker.version
+          ? st.read.uploadId
+          : await uploadPages('stage', pages, '', (m) => (btn.textContent = m));
+      }
       const res = await api('/api/data?action=saveDelivery', {
         method: 'POST',
         body: {
           orderId: o.id, deliveryId: deliveryId || undefined,
           date: $('#date').value, slipNo: $('#slipNo').value, receivedBy, notes: $('#dnotes').value,
           method: st.method, scanData: st.scan || undefined,
-          lines: payloadLines, file: st.prepared || undefined,
+          lines: payloadLines, uploadId,
         },
       });
       S.stale = true;
@@ -857,14 +848,15 @@ async function renderReceive(orderId, deliveryId) {
   };
 }
 
-/* Shrink photos so uploads are fast and under size limits. */
+/* ================= Pages: pick, upload, read ================= */
+
+/* Shrink photos so uploads are fast and under size limits. Returns {name, type, blob, url}. */
 async function prepareFile(file) {
-  const readB64 = (blob) => new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(String(r.result).split(',')[1]); r.onerror = () => rej(new Error('Could not read file')); r.readAsDataURL(blob); });
   if (file.type === 'application/pdf') {
-    if (file.size > 4.4 * 1024 * 1024) throw new Error('PDF is too large (max about 4.4 MB). Try a photo of the slip instead.');
-    return { name: file.name, type: 'application/pdf', base64: await readB64(file) };
+    if (file.size > 4.9 * 1024 * 1024) throw new Error(`${file.name} is too large (max about 5 MB). Try photos of the pages instead.`);
+    return { name: file.name, type: 'application/pdf', blob: file, url: '' };
   }
-  if (!file.type.startsWith('image/')) throw new Error('Please choose a photo or PDF of the packing slip.');
+  if (!file.type.startsWith('image/') && !/\.(heic|heif)$/i.test(file.name || '')) throw new Error('Please choose photos or PDFs.');
   let img;
   try { img = await createImageBitmap(file, { imageOrientation: 'from-image' }); }
   catch {
@@ -879,8 +871,92 @@ async function prepareFile(file) {
   ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
   let quality = 0.85, blob;
   do { blob = await new Promise((r) => canvas.toBlob(r, 'image/jpeg', quality)); quality -= 0.15; } while (blob.size > 3.5 * 1024 * 1024 && quality > 0.3);
-  const name = (file.name || 'packing-slip').replace(/\.[^.]+$/, '') + '.jpg';
-  return { name, type: 'image/jpeg', base64: await readB64(blob) };
+  const name = (file.name || 'page').replace(/\.[^.]+$/, '') + '.jpg';
+  return { name, type: 'image/jpeg', blob, url: URL.createObjectURL(blob) };
+}
+
+/**
+ * A strip of page thumbnails with "+ Add page" and a Read button, so multi-page
+ * documents (or several phone photos) are collected before anything is read.
+ */
+function pagePicker(root, { emptyLabel = 'Add photo / PDF', readLabel = (n) => `Read ${n} page${n === 1 ? '' : 's'}`, onRead, onChange } = {}) {
+  const P = { pages: [], version: 0, isBusy: false };
+  const draw = () => {
+    const n = P.pages.length;
+    root.innerHTML = `
+      <div class="pages">
+        ${P.pages.map((pg, i) => `<div class="page-tile">
+          ${pg.url ? `<img src="${pg.url}" alt="">` : `<span class="pdf">PDF</span>`}
+          <span class="pno">${i + 1}</span>
+          <button type="button" class="pg-x" data-x="${i}" title="Remove page" ${P.isBusy ? 'disabled' : ''}>×</button>
+          <span class="pname">${esc(pg.name)}</span>
+        </div>`).join('')}
+        <label class="page-add ${n ? '' : 'first'} ${P.isBusy ? 'disabled' : ''}">
+          <span class="plus">+</span><span>${n ? 'Add page' : esc(emptyLabel)}</span>
+          <input type="file" accept="image/*,application/pdf" multiple hidden>
+        </label>
+      </div>
+      ${n && onRead ? `<div class="pages-actions"><button type="button" class="btn dark read-btn" ${P.isBusy ? 'disabled' : ''}>${esc(readLabel(n))}</button>
+        <span class="small muted">${n === 1 ? 'More pages? Add them before reading.' : `${n} pages will be read together.`}</span></div>` : ''}`;
+    root.querySelector('input[type=file]').onchange = (e) => { add([...e.target.files]); e.target.value = ''; };
+    root.querySelectorAll('[data-x]').forEach((b) => (b.onclick = () => { P.pages.splice(+b.dataset.x, 1); changed(); }));
+    const rb = root.querySelector('.read-btn'); if (rb) rb.onclick = () => onRead && onRead();
+  };
+  const changed = () => { P.version++; draw(); onChange && onChange(P); };
+  async function add(files) {
+    for (const f of files) {
+      if (P.pages.length >= 10) { toast('Up to 10 pages at a time', 'error'); break; }
+      try { P.pages.push(await prepareFile(f)); } catch (err) { toast(err.message, 'error'); }
+    }
+    changed();
+  }
+  root.addEventListener('dragover', (e) => { e.preventDefault(); root.classList.add('drag'); });
+  root.addEventListener('dragleave', () => root.classList.remove('drag'));
+  root.addEventListener('drop', (e) => { e.preventDefault(); root.classList.remove('drag'); if (!P.isBusy) add([...e.dataTransfer.files]); });
+  P.busy = (b) => { P.isBusy = b; draw(); };
+  draw();
+  return P;
+}
+
+/** Stages pages on the server (one request per page). Returns the upload id. */
+async function uploadPages(kind, pages, orderId, onProgress) {
+  const { id } = await api('/api/ai?action=start', { method: 'POST', body: { kind, orderId } });
+  for (let i = 0; i < pages.length; i++) {
+    onProgress && onProgress(pages.length > 1 ? `Uploading page ${i + 1} of ${pages.length}…` : 'Uploading…');
+    const res = await fetch(`/api/ai?action=file&id=${id}&name=${encodeURIComponent(pages[i].name)}`, {
+      method: 'POST',
+      headers: { 'content-type': pages[i].type, authorization: `Bearer ${S.token}` },
+      body: pages[i].blob,
+    });
+    if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(d.error || `Upload failed (${res.status})`); }
+  }
+  return id;
+}
+
+/** Uploads pages, starts the background read, and waits for the result. */
+async function readPages(kind, pages, orderId, onProgress) {
+  const uploadId = await uploadPages(kind, pages, orderId, onProgress);
+  await api(`/api/ai?action=run&id=${uploadId}`, { method: 'POST', body: {} });
+  const started = Date.now();
+  let triedDirect = false;
+  for (;;) {
+    await new Promise((r) => setTimeout(r, 2000));
+    const secs = Math.round((Date.now() - started) / 1000);
+    const st = await api(`/api/ai?action=status&id=${uploadId}`);
+    if (st.status === 'done') return { uploadId, result: st.result };
+    if (st.status === 'error') throw new Error(st.error || 'Reading failed');
+    // Background job never picked up (e.g. background functions unavailable): read directly instead.
+    if (st.status === 'queued' && secs >= 15 && !triedDirect) {
+      triedDirect = true;
+      onProgress && onProgress('Reading…');
+      const r = await api(`/api/ai?action=runNow&id=${uploadId}`, { method: 'POST', body: {} });
+      if (r.status === 'done') return { uploadId, result: r.result };
+      continue;
+    }
+    if (secs > 12 * 60) throw new Error('Reading is taking much longer than expected. Try again, or enter it manually.');
+    const pg = pages.length > 1 ? `${pages.length} pages` : 'the document';
+    onProgress && onProgress(`Reading ${pg}… ${secs}s${secs >= 20 ? ' — longer orders can take a minute or two' : ''}`);
+  }
 }
 
 /* ================= Vendors ================= */

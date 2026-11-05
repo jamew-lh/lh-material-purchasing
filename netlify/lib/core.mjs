@@ -318,24 +318,28 @@ export async function loadVendors() {
 
 /* ---------------- Claude API ---------------- */
 
-const IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
+export const IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
+export const MAX_FILE_BYTES = 5 * 1024 * 1024; // Airtable's direct-upload limit per file
 
-/** Validates an uploaded {type, base64} file and returns a Claude content block. */
-export function fileBlock(file, maxBytes = 4.5 * 1024 * 1024) {
+/** Returns a Claude content block for one staged file {type, base64}. */
+export function fileBlock(file) {
   if (!file?.base64) throw new HttpError(400, 'No file received');
   const type = String(file.type || '').toLowerCase();
-  if ((file.base64.length * 3) / 4 > maxBytes) throw new HttpError(400, 'File is too large (max about 4.5 MB)');
   if (type === 'application/pdf') return { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: file.base64 } };
   if (IMAGE_TYPES.includes(type)) return { type: 'image', source: { type: 'base64', media_type: type, data: file.base64 } };
   throw new HttpError(400, 'File must be a PDF or a photo (JPG/PNG)');
 }
 
-/** Sends a file + prompt to Claude and returns the parsed JSON object from its reply. */
-export async function askClaudeJSON({ block, system, prompt, maxTokens = 4000, what = 'this document' }) {
+/**
+ * Sends one or more pages (content blocks) + a prompt to Claude and returns the parsed JSON object.
+ * timeoutMs: the background job allows minutes; the quick fallback must finish inside Netlify's ~30 s.
+ */
+export async function askClaudeJSON({ blocks, system, prompt, maxTokens = 4000, what = 'this document', timeoutMs = 240000 }) {
   const key = process.env.ANTHROPIC_API_KEY;
   if (!key) throw new HttpError(501, "AI reading isn't switched on yet. Add ANTHROPIC_API_KEY in Netlify's environment variables.");
+  const pages = blocks.length > 1 ? `The document is ${blocks.length} pages/photos, attached in order. Treat them as ONE document.\n\n` : '';
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 26000);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   let res;
   try {
     res = await fetch('https://api.anthropic.com/v1/messages', {
@@ -346,11 +350,11 @@ export async function askClaudeJSON({ block, system, prompt, maxTokens = 4000, w
         model: process.env.CLAUDE_MODEL || 'claude-sonnet-5-5',
         max_tokens: maxTokens,
         system,
-        messages: [{ role: 'user', content: [block, { type: 'text', text: prompt }] }],
+        messages: [{ role: 'user', content: [...blocks, { type: 'text', text: pages + prompt }] }],
       }),
     });
   } catch (e) {
-    if (e.name === 'AbortError') throw new HttpError(504, `Reading ${what} took too long. Try a smaller file, or enter it manually.`);
+    if (e.name === 'AbortError') throw new HttpError(504, `Reading ${what} took too long. Try fewer pages, or enter it manually.`);
     throw new HttpError(502, `Could not reach the AI service: ${e.message}`);
   } finally {
     clearTimeout(timer);
@@ -363,7 +367,7 @@ export async function askClaudeJSON({ block, system, prompt, maxTokens = 4000, w
     if (a < 0 || b < a) throw new Error('no json');
     return { result: JSON.parse(text.slice(a, b + 1)), truncated: data.stop_reason === 'max_tokens' };
   } catch {
-    if (data.stop_reason === 'max_tokens') throw new HttpError(502, `${what[0].toUpperCase() + what.slice(1)} has more lines than can be read in one pass. Try splitting the PDF.`);
+    if (data.stop_reason === 'max_tokens') throw new HttpError(502, `${what[0].toUpperCase() + what.slice(1)} has more lines than can be read in one pass. Try reading it in two parts.`);
     throw new HttpError(502, `Couldn't understand the AI's reading of ${what}. Try again or enter it manually.`);
   }
 }

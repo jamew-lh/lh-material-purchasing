@@ -4,5 +4,10 @@
   "private": true,
   "type": "module",
   "description": "Central purchasing hub for job site material orders (Netlify + Airtable)",
-  "engines": { "node": ">=20" }
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@netlify/blobs": "^11.1.7"
+  }
 }

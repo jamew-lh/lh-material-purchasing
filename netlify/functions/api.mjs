@@ -4,6 +4,7 @@ import {
   listAll, getOne, getByIds, createMany, updateMany, deleteMany, uploadAttachment,
   mapOrder, mapLine, mapDelivery, mapVendor, loadOrderDetail, loadJobs, loadVendors,
 } from '../lib/core.mjs';
+import { getJob, loadFiles, deleteJob } from '../lib/jobs.mjs';
 
 const ORDER_SUMMARY_FIELDS = [
   'Order Ref', 'PO #', 'Vendor Order #', 'Job Name', 'Job Number', 'Job Record ID', 'Vendor', 'Vendor Name',
@@ -40,7 +41,20 @@ async function nextPO() {
 
 /* ---------------- Writes ---------------- */
 
-const MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
+/** Attaches every staged page of an upload to a record. Returns a warning string, or null. */
+async function attachStaged(uploadId, recordId, field, savedWhat) {
+  if (!uploadId) return null;
+  let job;
+  try {
+    job = await getJob(uploadId);
+    const files = await loadFiles(job);
+    for (const f of files) await uploadAttachment(recordId, field, { contentType: f.type, base64: f.base64, filename: f.name });
+  } catch (e) {
+    return `${savedWhat} saved, but the attached file${job?.files?.length > 1 ? 's' : ''} didn't upload: ${e.message}`;
+  }
+  await deleteJob(job);
+  return null;
+}
 
 async function saveOrder(body) {
   const h = body.order || {};
@@ -129,21 +143,7 @@ async function saveOrder(body) {
     }
   }
 
-  let uploadWarning = null;
-  if (body.file?.base64) {
-    if ((body.file.base64.length * 3) / 4 > MAX_UPLOAD_BYTES) uploadWarning = 'Order saved, but the file was over 5 MB and was not attached.';
-    else {
-      try {
-        await uploadAttachment(deliveryId || orderId, deliveryId ? 'Packing Slip' : 'Attachments', {
-          contentType: str(body.file.type, 100) || 'application/pdf',
-          base64: body.file.base64,
-          filename: str(body.file.name, 150) || (deliveryId ? 'packing-slip' : 'order.pdf'),
-        });
-      } catch (e) {
-        uploadWarning = `Order saved, but the file didn't attach: ${e.message}`;
-      }
-    }
-  }
+  const uploadWarning = await attachStaged(body.uploadId, deliveryId || orderId, deliveryId ? 'Packing Slip' : 'Attachments', 'Order');
 
   return { ...(await loadOrderDetail(orderId)), generatedPO: generatedPO ? po : null, uploadWarning, received: !!deliveryId };
 }
@@ -183,7 +183,7 @@ async function saveDelivery(body) {
     await updateMany(T.deliveries, [{ id: deliveryId, fields }]);
     if (existing.lineIds.length) await deleteMany(T.dlines, existing.lineIds);
   } else {
-    if (!dlines.length && !body.file) throw new HttpError(400, 'Enter at least one quantity received');
+    if (!dlines.length && !body.uploadId) throw new HttpError(400, 'Enter at least one quantity received');
     deliveryId = (await createMany(T.deliveries, [fields]))[0].id;
   }
 
@@ -200,22 +200,7 @@ async function saveDelivery(body) {
     );
   }
 
-  let uploadWarning = null;
-  if (body.file?.base64) {
-    const bytes = Math.floor((body.file.base64.length * 3) / 4);
-    if (bytes > MAX_UPLOAD_BYTES) uploadWarning = 'Packing slip file was over 5 MB and was not attached.';
-    else {
-      try {
-        await uploadAttachment(deliveryId, 'Packing Slip', {
-          contentType: str(body.file.type, 100) || 'application/octet-stream',
-          base64: body.file.base64,
-          filename: str(body.file.name, 150) || 'packing-slip',
-        });
-      } catch (e) {
-        uploadWarning = `Delivery saved, but the slip file didn't attach: ${e.message}`;
-      }
-    }
-  }
+  const uploadWarning = await attachStaged(body.uploadId, deliveryId, 'Packing Slip', 'Delivery');
   return { ...(await loadOrderDetail(body.orderId)), uploadWarning };
 }
 
