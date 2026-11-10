@@ -8,8 +8,6 @@ export const CFG = {
   base: () => env('AIRTABLE_BASE_ID', 'appU50yPTSMZ2q40T'),          // Material Purchasing
   jobsBase: () => env('JOBS_BASE_ID', 'appmX8rxmEtdwrzSt'),          // Job Name List
   jobsTable: () => env('JOBS_TABLE_ID', 'tblg1mCHhTJXdZHCW'),
-  poPrefix: () => env('PO_PREFIX', 'PO-'),
-  poStart: () => parseInt(env('PO_START', '1001'), 10),
 };
 
 export const T = {
@@ -18,6 +16,7 @@ export const T = {
   lines: 'Order Lines',
   deliveries: 'Deliveries',
   dlines: 'Delivery Lines',
+  nonjob: 'Non-Job Codes',
 };
 
 export class HttpError extends Error {
@@ -269,7 +268,7 @@ export function mapVendor(r) {
   return {
     id: r.id,
     name: f['Vendor Name'] || '',
-    requiresPO: !!f['Requires PO'],
+    vendorNo: typeof f['Vendor #'] === 'number' ? f['Vendor #'] : null,
     rep: f['Rep'] || '',
     phone: f['Phone'] || '',
     email: f['Email'] || '',
@@ -310,6 +309,50 @@ export async function loadJobs() {
     }))
     .filter((j) => j.name)
     .sort((a, b) => (b.year || '').localeCompare(a.year || '') || a.name.localeCompare(b.name));
+}
+
+export async function loadNonJob() {
+  try {
+    const recs = await listAll(T.nonjob, { filterByFormula: '{Active}' });
+    return recs
+      .map((r) => ({ id: r.id, code: String(r.fields['Code'] || '').trim(), name: String(r.fields['Description'] || '').trim() }))
+      .filter((c) => c.code)
+      .sort((a, b) => a.code.localeCompare(b.code, undefined, { numeric: true }));
+  } catch (e) {
+    console.error('Non-Job Codes table unavailable', e.message);
+    return [];
+  }
+}
+
+/* ---------------- PO numbers (SOP: VV-JOB-MMDDYY, then -02, -03 …) ---------------- */
+
+/** Today's date as MMDDYY in Eastern time (the day the PO is issued). */
+export function poDate(d = new Date()) {
+  const p = Object.fromEntries(new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', year: '2-digit', month: '2-digit', day: '2-digit' })
+    .formatToParts(d).map((x) => [x.type, x.value]));
+  return `${p.month}${p.day}${p.year}`;
+}
+
+/** Job number as it goes in a PO: spaces removed, upper case ("426000 X4" -> "426000X4"). */
+export const poJobCode = (n) => String(n || '').replace(/\s+/g, '').toUpperCase();
+
+/** Next free SOP PO for a vendor # + job, skipping the order being edited. Returns {base, po}. */
+export async function buildSopPO(vendorNo, jobNumber, { excludeId = null, date = poDate() } = {}) {
+  if (!Number.isInteger(vendorNo) || vendorNo < 1) throw new HttpError(400, "This vendor doesn't have a Vendor # yet. Add one on the Vendors page.");
+  const job = poJobCode(jobNumber);
+  if (!job) throw new HttpError(400, "This job has no job number, so a PO # can't be built. Pick the job from the list.");
+  if (!/^[0-9A-Z]+$/.test(job)) throw new HttpError(400, `Job number "${jobNumber}" has characters that can't go in a PO #.`);
+  const base = `${String(vendorNo).padStart(2, '0')}-${job}-${date}`;
+  const recs = await listAll(T.orders, { fields: ['PO #'], filterByFormula: `LEFT({PO #}, ${base.length}) = '${base}'` });
+  let max = 0;
+  for (const r of recs) {
+    if (r.id === excludeId) continue;
+    const po = String(r.fields['PO #'] || '').trim().toUpperCase();
+    if (po === base) max = Math.max(max, 1);
+    const m = po.slice(base.length).match(/^-(\d{2,})$/);
+    if (po.startsWith(base) && m) max = Math.max(max, parseInt(m[1], 10));
+  }
+  return { base, po: max === 0 ? base : `${base}-${String(max + 1).padStart(2, '0')}` };
 }
 
 export async function loadVendors() {

@@ -10,7 +10,8 @@ Central hub for job site material orders. Search orders by job, vendor, PO # or 
 
 | Table | What it holds |
 |---|---|
-| Vendors | One row per vendor. Check **Requires PO** for vendors that need our PO number. |
+| Vendors | One row per vendor. **Vendor #** is the first part of every PO # (new vendors get the next number automatically; numbers must be unique). |
+| Non-Job Codes | Codes used in a PO in place of a job number (301 chains/lifting/rigging, 302 stock material). Add codes here and check **Active**; they appear in the job picker. |
 | Orders | One row per order (PO). Status, totals and last delivery date calculate automatically. |
 | Order Lines | Items on each order. Extended price, Qty Delivered, Qty Remaining and Line Status calculate automatically. |
 | Deliveries | One row per delivery / packing slip, with the slip file attached. |
@@ -41,8 +42,6 @@ Central hub for job site material orders. Search orders by job, vendor, PO # or 
 | `VIEWER_PASSWORD` | yes | Password for view-only access |
 | `SESSION_SECRET` | yes | Any long random string (40+ characters). Changing it signs everyone out. |
 | `ANTHROPIC_API_KEY` | for AI reading | Claude API key (see below). Without it, everything works except "Read slip automatically" and "Import from PDF". |
-| `PO_PREFIX` | optional | Defaults to `PO-` |
-| `PO_START` | optional | First PO number, defaults to `1001` |
 | `CLAUDE_MODEL` | optional | Defaults to `claude-sonnet-5-5` |
 
 After adding or changing variables: **Deploys → Trigger deploy → Deploy site**.
@@ -57,7 +56,8 @@ After adding or changing variables: **Deploys → Trigger deploy → Deploy site
 
 - **Import from PDF:** on New Order, tap **Import from PDF** and choose the vendor's order confirmation or quote. The vendor, job, order #, dates, delivery notes and every line item are filled in and highlighted. Uncheck items you don't want, adjust anything, then **Create order** — nothing is saved until you do. The app checks the items against the PDF's subtotal and flags quotes, freight/tax and unknown vendors or jobs. The PDF is attached to the order.
 - **Pickups / orders that already arrived:** use **Import PDF / slip** with a photo of the pickup ticket or delivery slip. The app recognizes it's a slip and shows **"Already picked up / delivered — mark these items received"** (checked), with the slip #, date, and a *Rec'd now* column for each item. **Create order & mark received** saves the order and its delivery together, with the slip photo on the delivery. Backordered items stay open. Items with no price on the slip are flagged and save at $0 until you add the price (Edit order).
-- **New order:** pick the vendor and job, enter the vendor's order # (and PO # if you have one), add items. For vendors marked *Requires PO*, the next PO # is assigned automatically when you save.
+- **PO numbers (SOP):** `VendorNo-JobNo-MMDDYY`, e.g. `03-325226-111026` — vendor # (2 digits), job number with spaces removed (`426000 X4` → `426000X4`) or a non-job code (301/302), and the date the PO is issued. A second PO for the same vendor, job and day gets `-02`, then `-03`, etc.
+- **New order:** pick the vendor and job; with **Create PO #** checked (the default) the PO # builds itself and is confirmed when you save. Uncheck it for orders without a PO, or to type a PO a vendor gave you. When editing, **Rebuild PO #** rebuilds it (it keeps the same number if the vendor/job/day hasn't changed). If an imported PDF already shows a PO #, that number is kept.
 - **Receive delivery:** from an order, tap **Receive delivery**. Take a photo of the packing slip (or choose a PDF) and tap **Read slip automatically** — quantities, slip # and date are filled in and highlighted for you to check. Or enter quantities by hand / **Fill all remaining**. The slip file is saved with the delivery.
 - **Partial shipments / backorders:** each delivery adds to *Delivered*; *Remaining* shows what's still owed.
 - **Editing:** change quantities, prices or items any time. Items that already have deliveries can't be removed (set their quantity instead). Deliveries can be edited or deleted.

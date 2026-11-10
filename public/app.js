@@ -9,6 +9,7 @@ const S = {
   role: null,
   jobs: [],
   vendors: [],
+  nonJob: [],
   orders: [],
   loaded: false,
   stale: false,
@@ -107,7 +108,7 @@ async function ensureData(force = false) {
   if (S.loaded && !force && !S.stale) return;
   if (!S.loaded || force) {
     const d = await api('/api/data?action=bootstrap');
-    S.jobs = d.jobs; S.vendors = d.vendors; S.orders = d.orders; S.role = d.role;
+    S.jobs = d.jobs; S.vendors = d.vendors; S.orders = d.orders; S.role = d.role; S.nonJob = d.nonJob || [];
   } else {
     const d = await api('/api/data?action=orders');
     S.orders = d.orders;
@@ -116,6 +117,13 @@ async function ensureData(force = false) {
 }
 
 const vendorById = (id) => S.vendors.find((v) => v.id === id);
+const vno = (v) => (v && v.vendorNo ? String(v.vendorNo).padStart(2, '0') : '');
+const vendorLabel = (v) => (vno(v) ? `${vno(v)} · ${v.name}` : v.name);
+const poJobCode = (n) => String(n || '').replace(/\s+/g, '').toUpperCase();
+function poDateToday() {
+  const p = Object.fromEntries(new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', year: '2-digit', month: '2-digit', day: '2-digit' }).formatToParts(new Date()).map((x) => [x.type, x.value]));
+  return `${p.month}${p.day}${p.year}`;
+}
 
 /* ================= Router ================= */
 
@@ -361,7 +369,10 @@ async function renderOrderForm(id) {
   }
   if (!lines.length) lines = [blankLine(), blankLine(), blankLine()];
 
-  const jobList = S.jobs.map((j) => ({ ...j, label: jobLabel(j) }));
+  const jobList = [
+    ...S.nonJob.map((c) => ({ id: '', nonJob: true, name: c.name, number: c.code, supervisor: 'Non-job', label: `${c.code} · ${c.name}` })),
+    ...S.jobs.map((j) => ({ ...j, label: jobLabel(j) })),
+  ];
   const currentJobLabel = o.jobName ? orderJobLabel(o) : '';
 
   app.innerHTML = `
@@ -377,15 +388,18 @@ async function renderOrderForm(id) {
       </div></div>` : ''}
       <div class="card"><div class="card-body grid c4">
         <label class="field span-2"><span>Vendor</span>
-          <div style="display:flex;gap:8px"><select id="vendor" required><option value="">Choose vendor…</option>${S.vendors.map((v) => `<option value="${v.id}" ${o.vendorId === v.id ? 'selected' : ''}>${esc(v.name)}${v.requiresPO ? ' (PO required)' : ''}</option>`).join('')}</select>
+          <div style="display:flex;gap:8px"><select id="vendor" required><option value="">Choose vendor…</option>${S.vendors.map((v) => `<option value="${v.id}" ${o.vendorId === v.id ? 'selected' : ''}>${esc(vendorLabel(v))}</option>`).join('')}</select>
           <button type="button" class="btn" id="addVendor">+ New</button></div>
         </label>
         <label class="field span-2"><span>Job</span>
           <input id="job" list="jobList" placeholder="Type job number or name…" value="${esc(currentJobLabel)}" required>
-          <datalist id="jobList">${jobList.map((j) => `<option value="${esc(j.label)}">${esc(j.supervisor || '')}</option>`).join('')}</datalist>
+          <datalist id="jobList">${jobList.map((j) => `<option value="${esc(j.label)}">${esc(j.nonJob ? 'Non-job code' : j.supervisor || '')}</option>`).join('')}</datalist>
           <span class="hint" id="jobHint"></span>
         </label>
-        <label class="field"><span>PO #</span><input id="po" value="${esc(o.po)}" placeholder="Optional"><span class="hint accent" id="poHint"></span></label>
+        <div class="field span-2 po-field"><label for="po"><span>PO #</span></label>
+          <div class="po-row"><input id="po" value="${esc(o.po)}" placeholder="Optional" autocomplete="off">
+            <label class="check po-toggle"><input type="checkbox" id="buildPO" ${id ? '' : 'checked'}> ${id && o.po ? 'Rebuild PO #' : 'Create PO #'}</label></div>
+          <span class="hint" id="poHint"></span></div>
         <label class="field"><span>Vendor order #</span><input id="vendorOrderNo" value="${esc(o.vendorOrderNo)}" placeholder="Confirmation / order #"></label>
         <label class="field"><span>Order date</span><input type="date" id="orderDate" value="${esc(o.orderDate)}"></label>
         <label class="field"><span>Requested delivery</span><input type="date" id="requested" value="${esc(o.requested)}"></label>
@@ -480,21 +494,57 @@ async function renderOrderForm(id) {
   const matchJob = () => {
     const v = $('#job').value.trim();
     const j = jobList.find((x) => x.label.toLowerCase() === v.toLowerCase());
-    $('#jobHint').textContent = !v ? '' : j ? (j.supervisor ? `Supervisor: ${j.supervisor}` : '') : (v === currentJobLabel ? '' : 'Not in your active job list — will be saved as typed.');
+    $('#jobHint').textContent = !v ? '' : j ? (j.nonJob ? 'Non-job code — used in the PO # in place of a job number' : j.supervisor ? `Supervisor: ${j.supervisor}` : '') : (v === currentJobLabel ? '' : 'Not in your active job list — will be saved as typed.');
     return j;
   };
   $('#job').oninput = matchJob; matchJob();
 
-  // PO hint
-  const poHint = () => {
+  // PO builder (SOP): VV-JOB-MMDDYY, then -02, -03 … for more POs the same day
+  const manualPO = o.po || '';
+  let poSeq = 0;
+  const poHint = async () => {
+    if (!$('#buildPO')) return; // left the form
+    const on = $('#buildPO').checked;
+    const poIn = $('#po');
+    poIn.readOnly = on;
+    poIn.classList.toggle('built', on);
+    const hint = $('#poHint');
+    hint.className = 'hint';
+    if (!on) {
+      if (poIn.dataset.wasBuilt) { poIn.value = manualPO; delete poIn.dataset.wasBuilt; }
+      hint.textContent = id && o.po ? '' : 'No PO # for this order — or type one the vendor gave you.';
+      return;
+    }
+    poIn.dataset.wasBuilt = '1';
     const v = vendorById($('#vendor').value);
-    $('#poHint').textContent = v?.requiresPO && !$('#po').value.trim() ? 'Next PO # will be assigned when you save.' : '';
+    const j = matchJob();
+    const jobNo = j ? j.number : ($('#job').value.trim() === currentJobLabel ? o.jobNumber : '');
+    if (!v) { poIn.value = ''; hint.textContent = 'Pick a vendor and job to build the PO #.'; return; }
+    if (!v.vendorNo) { poIn.value = ''; hint.className = 'hint warn'; hint.textContent = `${v.name} has no Vendor # yet — add one on the Vendors page (or uncheck Create PO #).`; return; }
+    if (!poJobCode(jobNo)) { poIn.value = ''; hint.textContent = $('#job').value.trim() ? 'Pick the job from the list so its job number can go in the PO #.' : 'Pick a job to build the PO #.'; return; }
+    const base = `${vno(v)}-${poJobCode(jobNo)}-${poDateToday()}`;
+    poIn.value = base;
+    hint.textContent = `Vendor ${vno(v)} · job ${poJobCode(jobNo)} · issued today. Checking for other POs today…`;
+    const mine = ++poSeq;
+    try {
+      const r = await api(`/api/data?action=previewPO&vendorId=${v.id}&job=${encodeURIComponent(jobNo)}${id ? `&exclude=${id}` : ''}`);
+      if (mine !== poSeq || !$('#buildPO')?.checked) return;
+      if (r.problem) { poIn.value = ''; hint.className = 'hint warn'; hint.textContent = r.problem; return; }
+      const keep = id && o.po && (o.po === base || o.po.startsWith(`${base}-`));
+      poIn.value = keep ? o.po : r.po;
+      hint.textContent = poIn.value === base
+        ? `Vendor ${vno(v)} · job ${poJobCode(jobNo)} · issued today. Confirmed when you save.`
+        : `Another PO already exists for this vendor, job and day, so this one gets the next sequence. Confirmed when you save.`;
+    } catch { if (mine === poSeq && $('#buildPO')) hint.textContent = `Vendor ${vno(v)} · job ${poJobCode(jobNo)} · issued today. Confirmed when you save.`; }
   };
-  $('#vendor').onchange = poHint; $('#po').oninput = poHint; poHint();
+  $('#vendor').onchange = poHint; $('#buildPO').onchange = poHint;
+  $('#job').addEventListener('change', poHint);
+  let poTimer; $('#job').addEventListener('input', () => { clearTimeout(poTimer); poTimer = setTimeout(poHint, 350); });
+  poHint();
 
   const selectNewVendor = (v) => {
     const sel = $('#vendor');
-    if (!sel.querySelector(`option[value="${v.id}"]`)) sel.insertAdjacentHTML('beforeend', `<option value="${v.id}">${esc(v.name)}${v.requiresPO ? ' (PO required)' : ''}</option>`);
+    if (!sel.querySelector(`option[value="${v.id}"]`)) sel.insertAdjacentHTML('beforeend', `<option value="${v.id}">${esc(vendorLabel(v))}</option>`);
     sel.value = v.id; sel.classList.remove('filled'); poHint();
   };
   $('#addVendor').onclick = () => vendorModal(null, selectNewVendor);
@@ -531,7 +581,7 @@ async function renderOrderForm(id) {
 
   function applyDraft(d, fileName) {
     if (d.vendorId) { $('#vendor').value = d.vendorId; $('#vendor').classList.add('filled'); }
-    markFilled('#po', d.po);
+    if (d.po) { $('#buildPO').checked = false; $('#po').readOnly = false; delete $('#po').dataset.wasBuilt; markFilled('#po', d.po); }
     markFilled('#vendorOrderNo', d.vendorOrderNo);
     markFilled('#orderDate', d.orderDate);
     markFilled('#requested', d.requested);
@@ -540,6 +590,7 @@ async function renderOrderForm(id) {
     const job = d.jobId ? jobList.find((j) => j.id === d.jobId) : null;
     if (job) markFilled('#job', job.label);
     matchJob(); poHint();
+    if (d.po) $('#poHint').textContent = 'PO # read from the document. Check Create PO # to build a new one instead.';
 
     imported = true;
     const kept = lines.filter((l) => !l.imported && String(l.description).trim()); // keep anything typed by hand
@@ -583,7 +634,7 @@ async function renderOrderForm(id) {
     $('#importOut').innerHTML = `<div style="margin-top:12px">${parts.join('')}</div>`;
     if ($('#recvToggle')) $('#recvToggle').onchange = (e) => { recvMode = e.target.checked; $('#recvFields').hidden = !recvMode; drawLines(); setSaveLabel(); };
     setSaveLabel();
-    if ($('#impAddVendor')) $('#impAddVendor').onclick = () => vendorModal({ name: d.vendorFound, requiresPO: false, ...d.vendorContact, account: '', notes: '' }, (v) => { selectNewVendor(v); $('#impAddVendor')?.closest('.callout')?.remove(); });
+    if ($('#impAddVendor')) $('#impAddVendor').onclick = () => vendorModal({ name: d.vendorFound, vendorNo: '', ...d.vendorContact, account: '', notes: '' }, (v) => { selectNewVendor(v); $('#impAddVendor')?.closest('.callout')?.remove(); });
   }
 
   if ($('#deleteOrder')) $('#deleteOrder').onclick = async () => {
@@ -599,7 +650,7 @@ async function renderOrderForm(id) {
     const job = matchJob();
     const jobText = $('#job').value.trim();
     let jobFields;
-    if (job) jobFields = { jobId: job.id, jobName: job.name, jobNumber: job.number };
+    if (job) jobFields = { jobId: job.id || '', jobName: job.name, jobNumber: job.number };
     else if (jobText === currentJobLabel && o.jobName) jobFields = { jobId: o.jobId, jobName: o.jobName, jobNumber: o.jobNumber };
     else jobFields = { jobId: '', jobName: jobText, jobNumber: '' };
 
@@ -608,7 +659,7 @@ async function renderOrderForm(id) {
         id: id || undefined,
         vendorId: $('#vendor').value,
         ...jobFields,
-        po: $('#po').value, vendorOrderNo: $('#vendorOrderNo').value,
+        po: $('#po').value, buildPO: $('#buildPO').checked, vendorOrderNo: $('#vendorOrderNo').value,
         orderDate: $('#orderDate').value, requested: $('#requested').value,
         orderedBy: $('#orderedBy').value, deliveryNotes: $('#deliveryNotes').value, notes: $('#notes').value,
         cancelled: $('#cancelled')?.checked || false,
@@ -619,6 +670,10 @@ async function renderOrderForm(id) {
     if (payload.receive) {
       store('mp_receivedBy', payload.receive.receivedBy);
       if (!payload.lines.some((l) => l.receiveQty)) { if (!confirm('No "Rec\'d now" quantities are filled in. Create the order without recording a delivery?')) return; payload.receive = undefined; }
+    }
+    if (payload.order.buildPO && !$('#po').value.trim()) {
+      if (!confirm(`A PO # can't be built: ${$('#poHint').textContent}\n\nSave this order without a PO #?`)) return;
+      payload.order.buildPO = false; payload.order.po = '';
     }
     if (!payload.lines.some((l) => String(l.description || '').trim())) {
       if (!confirm('This order has no items. Save it anyway?')) return;
@@ -635,7 +690,7 @@ async function renderOrderForm(id) {
       const res = await api('/api/data?action=saveOrder', { method: 'POST', body: payload });
       S.stale = true;
       if (res.uploadWarning) toast(res.uploadWarning, 'error');
-      else toast([res.received ? 'Order created and marked received' : 'Order saved', res.generatedPO ? `PO # ${res.generatedPO} assigned` : ''].filter(Boolean).join(' — '));
+      else toast([res.received ? 'Order created and marked received' : 'Order saved', res.generatedPO ? `PO # ${res.generatedPO}` : ''].filter(Boolean).join(' — '));
       location.hash = `#/order/${res.order.id}`;
     } catch (err) {
       toast(err.message, 'error'); btn.disabled = false; setSaveLabel();
@@ -964,12 +1019,12 @@ async function readPages(kind, pages, orderId, onProgress) {
 function renderVendors() {
   app.innerHTML = `
     <div class="page-head">
-      <div class="grow"><h1>Vendors</h1><div class="sub">Check "Requires PO" for vendors that need our PO number — the app assigns the next one automatically.</div></div>
+      <div class="grow"><h1>Vendors</h1><div class="sub">The Vendor # is the first part of every PO #. New vendors get the next number automatically.</div></div>
       ${isAdmin() ? '<div class="actions"><button class="btn primary" id="newVendor">+ New vendor</button></div>' : ''}
     </div>
-    <div class="card">${S.vendors.length ? S.vendors.map((v) => `
+    <div class="card">${S.vendors.length ? [...S.vendors].sort((a, b) => (a.vendorNo || 999) - (b.vendorNo || 999) || a.name.localeCompare(b.name)).map((v) => `
       <div class="vendor-row">
-        <div><b>${esc(v.name)}</b> ${v.requiresPO ? '<span class="tag scan">PO required</span>' : ''}<div class="small muted">${esc(v.account ? `Acct ${v.account}` : '')}</div></div>
+        <div class="vendor-name"><span class="vno ${v.vendorNo ? '' : 'none'}">${vno(v) || '—'}</span><div><b>${esc(v.name)}</b><div class="small muted">${esc(v.account ? `Acct ${v.account}` : v.vendorNo ? '' : 'No Vendor # — needed to build PO #s')}</div></div></div>
         <div class="hide-sm small">${esc(v.rep)}${v.phone ? `<div><a href="tel:${esc(v.phone)}">${esc(v.phone)}</a></div>` : ''}</div>
         <div class="hide-sm small">${v.email ? `<a href="mailto:${esc(v.email)}">${esc(v.email)}</a>` : ''}<div class="muted">${S.orders.filter((o) => o.vendorId === v.id).length} orders</div></div>
         <div>${isAdmin() ? `<button class="btn sm" data-edit="${v.id}">Edit</button>` : ''}</div>
@@ -980,15 +1035,16 @@ function renderVendors() {
 }
 
 function vendorModal(v, onSaved) {
-  v = v || { name: '', requiresPO: false, rep: '', phone: '', email: '', account: '', notes: '' };
+  v = v || { name: '', vendorNo: '', rep: '', phone: '', email: '', account: '', notes: '' };
+  const nextNo = Math.max(0, ...S.vendors.map((x) => x.vendorNo || 0)) + 1;
   const back = document.createElement('div');
   back.className = 'modal-back';
   back.innerHTML = `
     <form class="card modal" autocomplete="off">
       <div class="card-head"><h2 class="grow">${v.id ? 'Edit vendor' : 'New vendor'}</h2><button type="button" class="icon-btn" data-close>×</button></div>
       <div class="card-body grid c2">
-        <label class="field span-2"><span>Vendor name</span><input name="name" value="${esc(v.name)}" required></label>
-        <label class="check span-2"><input type="checkbox" name="requiresPO" ${v.requiresPO ? 'checked' : ''}> Requires our PO number</label>
+        <label class="field"><span>Vendor name</span><input name="name" value="${esc(v.name)}" required></label>
+        <label class="field"><span>Vendor #</span><input name="vendorNo" type="number" min="1" max="99" inputmode="numeric" value="${esc(v.vendorNo ?? '')}" placeholder="${v.id ? '' : `${String(nextNo).padStart(2, '0')} (next)`}"><span class="hint">${v.id ? 'Used in PO #s — changing it doesn\'t change existing POs.' : 'Leave blank to use the next number.'}</span></label>
         <label class="field"><span>Rep</span><input name="rep" value="${esc(v.rep)}"></label>
         <label class="field"><span>Phone</span><input name="phone" type="tel" value="${esc(v.phone)}"></label>
         <label class="field"><span>Email</span><input name="email" type="email" value="${esc(v.email)}"></label>
@@ -1007,7 +1063,7 @@ function vendorModal(v, onSaved) {
     const btn = form.querySelector('[type=submit]'); btn.disabled = true;
     const fd = new FormData(form);
     try {
-      const { vendor } = await api('/api/data?action=saveVendor', { method: 'POST', body: { vendor: { id: v.id, name: fd.get('name'), requiresPO: fd.get('requiresPO') === 'on', rep: fd.get('rep'), phone: fd.get('phone'), email: fd.get('email'), account: fd.get('account'), notes: fd.get('notes') } } });
+      const { vendor } = await api('/api/data?action=saveVendor', { method: 'POST', body: { vendor: { id: v.id, name: fd.get('name'), vendorNo: fd.get('vendorNo'), rep: fd.get('rep'), phone: fd.get('phone'), email: fd.get('email'), account: fd.get('account'), notes: fd.get('notes') } } });
       const i = S.vendors.findIndex((x) => x.id === vendor.id);
       if (i >= 0) S.vendors[i] = vendor; else S.vendors.push(vendor);
       S.vendors.sort((a, b) => a.name.localeCompare(b.name));

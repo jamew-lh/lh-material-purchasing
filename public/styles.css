@@ -218,6 +218,17 @@ tfoot td { font-weight: 700; border-top: 2px solid var(--line-2); border-bottom:
 .form-foot { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; padding: 14px 16px; border-top: 1px solid var(--line); background: var(--surface-2); border-radius: 0 0 var(--radius) var(--radius); }
 .form-foot .grow { flex: 1; }
 
+/* ---------- PO builder ---------- */
+.po-field > label > span { display: block; font-size: 12px; font-weight: 600; color: var(--ink-2); text-transform: uppercase; letter-spacing: .04em; margin-bottom: 5px; }
+.po-row { display: flex; gap: 10px; align-items: center; }
+.po-row input { flex: 1; min-width: 0; font-family: var(--mono); font-weight: 600; letter-spacing: .02em; }
+.po-row input.built { background: #eef5f3; border-color: var(--brand); color: var(--brand); }
+.po-toggle { white-space: nowrap; font-size: 14px; }
+.hint.warn { color: var(--red); }
+.vendor-name { display: flex; align-items: center; gap: 12px; }
+.vno { display: inline-grid; place-items: center; min-width: 38px; height: 30px; padding: 0 8px; border-radius: 8px; background: var(--brand); color: #fff; font: 700 14px var(--mono); }
+.vno.none { background: var(--gray-soft); color: var(--ink-3); }
+
 /* ---------- Page picker (multi-page photos / PDFs) ---------- */
 .pages-wrap { margin-top: 12px; border-radius: var(--radius); }
 .pages-wrap.drag { outline: 2px dashed var(--tan); outline-offset: 4px; }

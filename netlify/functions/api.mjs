@@ -2,7 +2,7 @@
 import {
   CFG, T, HttpError, handler, json, readBody, requireAuth,
   listAll, getOne, getByIds, createMany, updateMany, deleteMany, uploadAttachment,
-  mapOrder, mapLine, mapDelivery, mapVendor, loadOrderDetail, loadJobs, loadVendors,
+  mapOrder, mapLine, mapDelivery, mapVendor, loadOrderDetail, loadJobs, loadVendors, loadNonJob, buildSopPO, poDate,
 } from '../lib/core.mjs';
 import { getJob, loadFiles, deleteJob } from '../lib/jobs.mjs';
 
@@ -24,19 +24,6 @@ const toNum = (v) => {
 
 async function loadOrders() {
   return (await listAll(T.orders, { fields: ORDER_SUMMARY_FIELDS })).map(mapOrder);
-}
-
-/* ---------------- PO numbers ---------------- */
-
-async function nextPO() {
-  const prefix = CFG.poPrefix();
-  const recs = await listAll(T.orders, { fields: ['PO #'], filterByFormula: "{PO #}!=''" });
-  let max = CFG.poStart() - 1;
-  for (const r of recs) {
-    const m = String(r.fields['PO #'] || '').match(/(\d+)\s*$/);
-    if (m) max = Math.max(max, parseInt(m[1], 10));
-  }
-  return `${prefix}${max + 1}`;
 }
 
 /* ---------------- Writes ---------------- */
@@ -66,7 +53,13 @@ async function saveOrder(body) {
   const vendor = mapVendor(await getOne(T.vendors, h.vendorId));
   let po = str(h.po, 60);
   let generatedPO = false;
-  if (!po && vendor.requiresPO) { po = await nextPO(); generatedPO = true; }
+  if (h.buildPO) {
+    // SOP PO: keep the current one if it's already this vendor/job/day, otherwise take the next free number.
+    const { base, po: fresh } = await buildSopPO(vendor.vendorNo, h.jobNumber, { excludeId: h.id || null });
+    const cur = po.toUpperCase();
+    const sameDay = cur === base || (cur.startsWith(`${base}-`) && /^\d{2,}$/.test(cur.slice(base.length + 1)));
+    if (!(h.id && sameDay)) { po = fresh; generatedPO = true; }
+  }
   const vendorOrderNo = str(h.vendorOrderNo, 80);
   const ref = po || vendorOrderNo || `${vendor.name} ${h.orderDate || ''}`.trim();
 
@@ -216,9 +209,15 @@ async function saveVendor(body) {
   const v = body.vendor || {};
   const name = str(v.name, 150);
   if (!name) throw new HttpError(400, 'Vendor name is required');
+  const all = await loadVendors();
+  let vendorNo = v.vendorNo === '' || v.vendorNo == null ? null : parseInt(v.vendorNo, 10);
+  if (vendorNo != null && (!Number.isInteger(vendorNo) || vendorNo < 1 || vendorNo > 99)) throw new HttpError(400, 'Vendor # must be a whole number from 1 to 99');
+  if (vendorNo == null && !v.id) vendorNo = Math.max(0, ...all.map((x) => x.vendorNo || 0)) + 1; // new vendor: next number
+  const clash = vendorNo != null && all.find((x) => x.vendorNo === vendorNo && x.id !== v.id);
+  if (clash) throw new HttpError(400, `Vendor # ${String(vendorNo).padStart(2, '0')} is already used by ${clash.name}`);
   const fields = {
     'Vendor Name': name,
-    'Requires PO': !!v.requiresPO,
+    'Vendor #': vendorNo,
     'Rep': str(v.rep, 100),
     'Phone': str(v.phone, 40),
     'Email': str(v.email, 150) || null,
@@ -235,12 +234,20 @@ async function saveVendor(body) {
 
 const READS = {
   bootstrap: async () => {
-    const [jobs, vendors, orders] = await Promise.all([loadJobs(), loadVendors(), loadOrders()]);
-    return { jobs, vendors, orders };
+    const [jobs, vendors, orders, nonJob] = await Promise.all([loadJobs(), loadVendors(), loadOrders(), loadNonJob()]);
+    return { jobs, vendors, orders, nonJob, poDate: poDate() };
   },
   orders: async () => ({ orders: await loadOrders() }),
   order: async (url) => loadOrderDetail(url.searchParams.get('id')),
-  nextPO: async () => ({ po: await nextPO() }),
+  previewPO: async (url) => {
+    const v = mapVendor(await getOne(T.vendors, url.searchParams.get('vendorId')));
+    try {
+      return { po: (await buildSopPO(v.vendorNo, url.searchParams.get('job'), { excludeId: url.searchParams.get('exclude') || null })).po };
+    } catch (e) {
+      if (e.status === 400) return { po: '', problem: e.message };
+      throw e;
+    }
+  },
 };
 
 const WRITES = { saveOrder, deleteOrder, saveDelivery, deleteDelivery, saveVendor };
