@@ -392,8 +392,8 @@ async function renderOrderForm(id) {
           <button type="button" class="btn" id="addVendor">+ New</button></div>
         </label>
         <label class="field span-2"><span>Job</span>
-          <input id="job" list="jobList" placeholder="Type job number or name…" value="${esc(currentJobLabel)}" required>
-          <datalist id="jobList">${jobList.map((j) => `<option value="${esc(j.label)}">${esc(j.nonJob ? 'Non-job code' : j.supervisor || '')}</option>`).join('')}</datalist>
+          <div class="jobpick"><input id="job" placeholder="Tap to pick, or type job # / name…" value="${esc(currentJobLabel)}" required autocomplete="off" role="combobox" aria-expanded="false" aria-controls="jobDrop">
+            <div class="jobdrop" id="jobDrop" role="listbox" hidden></div></div>
           <span class="hint" id="jobHint"></span>
         </label>
         <div class="field span-2 po-field"><label for="po"><span>PO #</span></label>
@@ -498,6 +498,7 @@ async function renderOrderForm(id) {
     return j;
   };
   $('#job').oninput = matchJob; matchJob();
+  jobPicker($('#job'), $('#jobDrop'), jobList);
 
   // PO builder (SOP): VV-JOB-MMDDYY, then -02, -03 … for more POs the same day
   const manualPO = o.po || '';
@@ -901,6 +902,62 @@ async function renderReceive(orderId, deliveryId) {
       toast(err.message, 'error'); btn.disabled = false; btn.textContent = editing ? 'Save changes' : 'Save delivery';
     }
   };
+}
+
+/* ================= Job picker ================= */
+
+/**
+ * Searchable job list drawn by the app (the browser's built-in suggestion list
+ * behaves differently in Safari, Firefox and Chrome). Tap to see every job,
+ * type any part of the number, name or supervisor to narrow it.
+ */
+function jobPicker(input, drop, jobs) {
+  let shown = [], hi = -1, open = false, picking = false;
+  const norm = (t) => String(t || '').toLowerCase();
+  const hay = jobs.map((j) => norm(`${j.number} ${String(j.number || '').replace(/\s+/g, '')} ${j.name} ${j.supervisor || ''} ${j.address || ''}`));
+  const render = () => {
+    const v = input.value.trim();
+    const exact = jobs.findIndex((j) => norm(j.label) === norm(v));
+    const terms = exact >= 0 ? [] : norm(v).split(/\s+/).filter(Boolean);
+    shown = jobs.map((j, i) => i).filter((i) => terms.every((t) => hay[i].includes(t)));
+    if (hi >= shown.length) hi = shown.length - 1;
+    let lastGroup = null;
+    drop.innerHTML = shown.length ? shown.map((i, k) => {
+      const j = jobs[i];
+      const group = j.nonJob ? 'Non-job codes' : 'Active jobs';
+      const head = group !== lastGroup ? `<div class="jd-group">${group}</div>` : '';
+      lastGroup = group;
+      return `${head}<div class="jd-item ${k === hi ? 'hi' : ''} ${i === exact ? 'sel' : ''}" role="option" data-i="${i}">
+        <span class="jd-no">${esc(j.number)}</span><span class="jd-name">${esc(j.name)}</span>
+        <span class="jd-sub">${esc(j.nonJob ? 'Non-job' : j.supervisor || '')}</span></div>`;
+    }).join('') : `<div class="jd-empty">No active job matches "${esc(v)}". It will be saved as typed (no PO # can be built).</div>`;
+    const cur = drop.querySelector('.jd-item.hi');
+    if (cur) cur.scrollIntoView({ block: 'nearest' });
+  };
+  const show = () => { open = true; drop.hidden = false; input.setAttribute('aria-expanded', 'true'); render(); };
+  const hide = () => { open = false; drop.hidden = true; input.setAttribute('aria-expanded', 'false'); hi = -1; };
+  const pick = (i) => {
+    input.value = jobs[i].label;
+    hide();
+    picking = true;
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    picking = false;
+  };
+  input.addEventListener('focus', show);
+  input.addEventListener('click', () => { if (!open) show(); });
+  input.addEventListener('input', () => { if (picking) return; if (!open) show(); else { hi = -1; render(); } });
+  input.addEventListener('blur', () => setTimeout(hide, 150));
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowDown') { e.preventDefault(); if (!open) show(); hi = Math.min(shown.length - 1, hi + 1); render(); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); hi = Math.max(0, hi - 1); render(); }
+    else if (e.key === 'Enter' && open) { e.preventDefault(); if (hi >= 0) pick(shown[hi]); else if (shown.length === 1) pick(shown[0]); else hide(); }
+    else if (e.key === 'Escape') hide();
+  });
+  // mousedown (not click) so the input doesn't lose focus and close the list first
+  drop.addEventListener('mousedown', (e) => { e.preventDefault(); const it = e.target.closest('.jd-item'); if (it) pick(+it.dataset.i); });
+  drop.addEventListener('touchend', (e) => { const it = e.target.closest('.jd-item'); if (it && !drop.dataset.moved) { e.preventDefault(); pick(+it.dataset.i); } delete drop.dataset.moved; });
+  drop.addEventListener('touchmove', () => { drop.dataset.moved = '1'; }, { passive: true });
 }
 
 /* ================= Pages: pick, upload, read ================= */

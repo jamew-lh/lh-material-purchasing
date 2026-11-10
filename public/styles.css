@@ -218,6 +218,21 @@ tfoot td { font-weight: 700; border-top: 2px solid var(--line-2); border-bottom:
 .form-foot { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; padding: 14px 16px; border-top: 1px solid var(--line); background: var(--surface-2); border-radius: 0 0 var(--radius) var(--radius); }
 .form-foot .grow { flex: 1; }
 
+/* ---------- Job picker ---------- */
+.jobpick { position: relative; }
+.jobdrop { position: absolute; left: 0; right: 0; top: calc(100% + 4px); z-index: 30; max-height: min(340px, 55vh); overflow-y: auto; -webkit-overflow-scrolling: touch;
+  background: #fff; border: 1px solid var(--line-2); border-radius: 10px; box-shadow: 0 10px 30px rgba(0, 40, 38, .16); padding: 4px 0; }
+.jd-group { position: sticky; top: -4px; background: var(--surface-2); padding: 6px 12px; font-size: 11px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; color: var(--brand); border-bottom: 1px solid var(--line); }
+.jd-item { display: grid; grid-template-columns: auto 1fr auto; gap: 10px; align-items: baseline; padding: 10px 12px; cursor: pointer; border-bottom: 1px solid #f0f2f1; }
+.jd-item:last-child { border-bottom: 0; }
+.jd-item:hover, .jd-item.hi { background: var(--tan-soft); }
+.jd-item.sel { box-shadow: inset 3px 0 var(--brand); }
+.jd-no { font: 600 13px var(--mono); color: var(--brand); white-space: nowrap; }
+.jd-name { font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.jd-sub { font-size: 12px; color: var(--ink-3); white-space: nowrap; }
+.jd-empty { padding: 12px; font-size: 14px; color: var(--ink-3); }
+@media (max-width: 600px) { .jd-sub { display: none; } .jd-item { padding: 12px; } }
+
 /* ---------- PO builder ---------- */
 .po-field > label > span { display: block; font-size: 12px; font-weight: 600; color: var(--ink-2); text-transform: uppercase; letter-spacing: .04em; margin-bottom: 5px; }
 .po-row { display: flex; gap: 10px; align-items: center; }
