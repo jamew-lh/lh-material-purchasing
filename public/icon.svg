@@ -1,21 +1,10 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
-  <rect width="512" height="512" fill="#004745"/>
-  <!-- ground -->
-  <rect x="72" y="358" width="368" height="11" rx="5.5" fill="#D4A070" opacity=".5"/>
-  <!-- bell-and-spigot pipe section lying on the ground, open spigot end toward the viewer -->
-  <g transform="translate(-3 -8)">
-    <!-- bell: far end, a shade darker -->
-    <ellipse cx="414" cy="274" rx="30" ry="80" fill="#a97d52"/>
-    <rect x="364" y="194" width="50" height="160" fill="#c08f5e"/>
-    <!-- taper from barrel up to the bell -->
-    <path d="M326 212 L364 194 L364 354 L326 336 Z" fill="#c99662"/>
-    <!-- barrel -->
-    <rect x="104" y="212" width="224" height="124" fill="#D4A070"/>
-    <!-- highlight along the top -->
-    <rect x="116" y="228" width="200" height="13" rx="6.5" fill="#ECCDAC" opacity=".85"/>
-    <rect x="370" y="210" width="38" height="11" rx="5.5" fill="#ECCDAC" opacity=".55"/>
-    <!-- open spigot end: wall ring and dark bore -->
-    <ellipse cx="104" cy="274" rx="30" ry="62" fill="#ECCDAC"/>
-    <ellipse cx="106" cy="274" rx="20" ry="46" fill="#00302e"/>
+  <rect width="512" height="512" rx="96" fill="#0B4635"/>
+  <!-- section of bell-and-spigot pipe, drawn in the same line style as the Timecard icon -->
+  <g fill="none" stroke-linecap="round" stroke-linejoin="round" transform="translate(-17 0)">
+    <path d="M168 164 H322 L346 140 H396 M168 348 H322 L346 372 H396" stroke="#D69C61" stroke-width="34"/>
+    <path d="M396 140 A44 116 0 0 1 396 372" stroke="#D69C61" stroke-width="34"/>
+    <ellipse cx="168" cy="256" rx="62" ry="92" stroke="#D69C61" stroke-width="34"/>
+    <path d="M168 210 A20 46 0 0 0 168 302" stroke="#FFFFFF" stroke-width="30"/>
   </g>
 </svg>
